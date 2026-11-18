@@ -69,23 +69,27 @@ def _head_probe(proxy: str | None, timeout: float, retries: int = 3) -> vs.HeadP
     opener = urllib.request.build_opener(*handlers)
 
     def head(url: str) -> bool:
-        req = urllib.request.Request(url, method="HEAD",
-                                     headers={"User-Agent": "factorfactory/1.0"})
+        # 用 GET 而非 HEAD：直连备份站时 HEAD 会被连接重置，GET 稳定且快（~0.3s）。
+        # 探测只判断存在性，读 1 字节即可（Range 不被 S3 支持时也不过是一个 zip 首部）。
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "factorfactory/1.0", "Range": "bytes=0-0"},
+        )
         last: Exception | None = None
         for attempt in range(retries):
             try:
-                with opener.open(req, timeout=timeout):
+                with opener.open(req, timeout=timeout) as resp:
+                    resp.read(1)
                     return True
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
                     return False  # 确认无归档，不是网络问题
                 last = exc
             except Exception as exc:
-                last = exc  # 代理 EOF / 超时：重试，不能当成「没有归档」
+                last = exc  # 网络抖动：重试，不能当成「没有归档」
             if attempt < retries - 1:
                 time.sleep(0.5 * (attempt + 1))
         raise FlowError(
-            E4002, f"HEAD 探测失败（重试 {retries} 次）: {url}", path="vision.head",
+            E4002, f"归档探测失败（重试 {retries} 次）: {url}", path="vision.head",
             context={"error": f"{type(last).__name__}: {last}" if last else "unknown"},
         )
 

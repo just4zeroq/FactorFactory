@@ -193,11 +193,14 @@ python -m app.cli fetch \
 `vision` 把「发现全市场 → 按历史长度筛选 → 拉齐数据」固化成三步：
 
 ```bash
-python -m app.cli vision list   --proxy http://127.0.0.1:7890
-python -m app.cli vision scan   --min-days 1200 --write-symbol-set pit_all \
-                                --proxy http://127.0.0.1:7890
-python -m app.cli vision fetch  --min-days 1200 --proxy http://127.0.0.1:7890
+python -m app.cli vision list
+python -m app.cli vision scan   --min-days 1200 --write-symbol-set pit_all
+python -m app.cli vision fetch  --min-days 1200
 ```
+
+**直连优先**：备份站 `data.binance.vision` 通常可直连且很快（GET 约 0.3s），不要默认挂代理——
+实测经 HTTP 代理时 SSL 连接会被成串重置，反而拖垮扫描/下载；只有直连确实不通时才用 `--proxy`。
+（`list` 用 ccxt 拉交易所清单，交易所 API 在部分网络下需代理，此时单独给 `list --proxy`。）
 
 - `list`：ccxt 拉全市场 USDT-M 永续清单（约 900 个），缓存到 `schemas/all_perps.json`。
 - `scan`：对每个标的用二分探测备份站**最早有归档的月份**（归档月份单调，二分把请求数从
@@ -210,7 +213,7 @@ python -m app.cli vision fetch  --min-days 1200 --proxy http://127.0.0.1:7890
 ```bash
 python -m app.cli fetch --datasets ohlcv,funding --symbols "BTC/USDT:USDT,ETH/USDT:USDT" \
   --exchange binanceusdm --start 2020-01-01 --end 2026-11-01 \
-  --from-binance-vision --proxy http://127.0.0.1:7890
+  --from-binance-vision
 ```
 
 注意：**备份站无 `open_interest` 月度历史**（交易所只留约 30 天），`basis` 需 perp/spot 同日对齐，
