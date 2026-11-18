@@ -170,7 +170,6 @@ python -m app.cli fetch \
 | `--market` | 否 | `futures` | `spot` 只允许 `ohlcv`；事件流是合约的定义域 |
 | `--timeframe` | 否 | `1d` | 只对 `ohlcv` 生效 |
 | `--start` / `--end` | 是（交易所源） | — | RFC3339 或 `YYYY-MM-DD`（按 UTC 解释） |
-| `--from-v4` | 否 | — | 从 V4 feather 快照导入，见 1.5 |
 | `--revise` | 否 | 关 | 覆盖已写历史（默认 append-only） |
 | `--limit` | 否 | `1000` | ccxt 每页根数 |
 | `--spot-exchange` | 否 | `binance` | `basis` 由 perp/spot 收盘价派生，需要第二个客户端 |
@@ -213,26 +212,7 @@ python -m app.cli fetch \
 
 > 数据刷新**不会**逼你重建试验族：`policy_digest` 不含 supply pins，`blueprint_digest` 才含。但同一张 ticket 上的单步/重算会因 checksum 变化以 `E3002` 拒绝续跑（防「在另一份数据上重算出看似正常的结果」）。
 
-## 1.5 从 V4 快照导入
-
-已有 V4 的 feather 快照时不必重新联网：
-
-```bash
-python -m app.cli fetch \
-  --datasets ohlcv,funding --symbol-set crypto20 \
-  --exchange binanceusdm --from-v4 ../FactorMiner/data/binance
-```
-
-V4 侧的定位约定（只用于找文件，不用于反推符号——`1000PEPE` 与 `PEPE` 是两份数据，反推必然出错）：
-
-```
-<v4_root>/<market>/<STEM>-<tf>-<market>.feather              # OHLCV
-<v4_root>/<market>/crypto_streams/<STEM>-<tf>-<kind>.feather # funding / open_interest / basis
-```
-
-`--symbols` / `--symbol-set` 仍然必填（导入的标的清单必须由你声明）。V4 事件流文件名里的 `-1d-` 是假标签：真实结算间隔由数据决定，导入时现算。
-
-## 1.6 体检（采完必须做）
+## 1.5 体检（采完必须做）
 
 ```bash
 python -m app.cli doctor --plan examples/plan_demo_crypto20.json
@@ -337,7 +317,7 @@ python -m app.cli explain --plan my_plan.json --set search.seed=7
 python -m app.cli doctor --plan my_plan.json
 ```
 
-判据见 1.6。`summary.passed=false` 时先修数据再往下跑：`run` 不会因为缺口而失败，它会照常产出候选、照常裁决，只是结论建立在一段有洞的时间轴上。
+判据见 1.5。`summary.passed=false` 时先修数据再往下跑：`run` 不会因为缺口而失败，它会照常产出候选、照常裁决，只是结论建立在一段有洞的时间轴上。
 
 ## 2.4 跑八工位
 
@@ -620,7 +600,7 @@ python -m app.cli estimate --plan my_plan.json --turnover 1.0
 
 | 命令 | mutation | 用途 | 关键参数 |
 |---|---|---|---|
-| `fetch` | 写供给 | 四数据集采集 | `--datasets` `--symbol-set`/`--symbols` `--exchange` `--market` `--timeframe` `--start` `--end` `--from-v4` `--revise` `--limit` `--spot-exchange` |
+| `fetch` | 写供给 | 四数据集采集 | `--datasets` `--symbol-set`/`--symbols` `--exchange` `--market` `--timeframe` `--start` `--end` `--revise` `--limit` `--spot-exchange` |
 | `doctor` | 只读 | 供给体检 | `--plan` `--dataset` |
 | `estimate` | 只读 | 成本估算 | `--plan` `--turnover` |
 | `explain` | 只读 | 编译来源与指纹 | `--plan` `--set` `--no-strict` `--allow-constitutive-override` |
