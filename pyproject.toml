@@ -18,24 +18,33 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-# 运行时依赖的唯一来源是 requirements.txt（其中再引用 v5/requirements.txt）。
-# 这里只声明「不装就无法 import」的最小集合，带版本约束的完整清单在那两份文件里，
-# 因为 ml4t-backtest 必须从 git 固定 commit 安装，PEP 508 直接写会让 pip 每次解析。
+# 运行时依赖的唯一来源是 requirements.txt。这里只声明「不装就无法 import」的
+# 最小集合，带版本约束的完整清单在那份文件里——因为 ml4t-backtest 必须从 git
+# 固定 commit 安装，PEP 508 直接写会让 pip 每次解析。
 dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/just4zeroq/FactorFactory"
-Documentation = "https://github.com/just4zeroq/FactorFactory/blob/main/docs/architecture/v5/INDEX.md"
+Documentation = "https://github.com/just4zeroq/FactorFactory/blob/main/docs/INDEX.md"
 
+# 八个顶层包（原 v5/ 下的一层目录，现在直接位于仓库根）：
+# contracts → facilities → storage → upstream → runtime → capability → orchestration → app
 [tool.setuptools.packages.find]
-include = ["v5*"]
-exclude = ["tests*", "docs*"]
+include = [
+    "contracts*",
+    "facilities*",
+    "storage*",
+    "upstream*",
+    "runtime*",
+    "capability*",
+    "orchestration*",
+    "app*",
+]
+exclude = ["tests*", "docs*", "examples*"]
 
 [tool.setuptools.package-data]
-v5 = [
-    "contracts/plan_schema.json",
-    "capability/registry/*.json",
-]
+contracts = ["plan_schema.json"]
+capability = ["registry/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

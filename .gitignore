@@ -49,7 +49,7 @@ logs/
 
 # 单次运行的产物目录（ticket / parcel / 账本 / 事件流）随 `run` / `pipeline`
 # 生成，属可再生产物。验证基线不在这里——黄金面板夹具在
-# tests/fixtures/v5/golden/，随仓库提交。
+# tests/fixtures/golden/，随仓库提交。
 user_workspace/
 runs/
 reports/

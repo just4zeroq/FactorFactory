@@ -87,12 +87,12 @@ pip install -r requirements.txt
 
 ## 快速开始
 
-跑通只需要一个「数据根」——供给、票据、账本、日志都写在里面，**默认 `~/factor-miner-v5`**，也可用 `FLOW_DATA_ROOT` 指到别处。仓库本身保持干净。
+跑通只需要一个「数据根」——供给、票据、账本、日志都写在里面，**默认 `~/factorfactory`**，也可用 `FLOW_DATA_ROOT` 指到别处。仓库本身保持干净。
 
 ### 0. 准备数据根
 
 ```bash
-export FLOW_DATA_ROOT=~/factor-miner-v5        # Windows PowerShell: $env:FLOW_DATA_ROOT="C:\data\fm-v5"
+export FLOW_DATA_ROOT=~/factorfactory          # Windows: $env:FLOW_DATA_ROOT="C:\data\factorfactory"
 
 mkdir -p "$FLOW_DATA_ROOT/schemas"
 cp examples/symbol_sets.json "$FLOW_DATA_ROOT/schemas/"
@@ -103,7 +103,7 @@ cp examples/symbol_sets.json "$FLOW_DATA_ROOT/schemas/"
 ### 1. 采集
 
 ```bash
-python -m v5.app.cli fetch \
+python -m app.cli fetch \
   --datasets ohlcv,funding,open_interest,basis \
   --symbol-set crypto20 --exchange binanceusdm --market futures \
   --start 2024-01-01 --end 2026-09-13
@@ -116,7 +116,7 @@ python -m v5.app.cli fetch \
 ### 2. 体检
 
 ```bash
-python -m v5.app.cli doctor --plan examples/plan_demo_crypto20.json
+python -m app.cli doctor --plan examples/plan_demo_crypto20.json
 ```
 
 逐数据集给出：标的数、行数、`version`、`coverage`、`interval_ns`、`end_closed`、`gaps`、行数偏薄的标的。带 `--plan` 时还会核对计划声明的数据集与标的集成员是否都到位。
@@ -124,7 +124,7 @@ python -m v5.app.cli doctor --plan examples/plan_demo_crypto20.json
 ### 3. 跑一次完整流水线
 
 ```bash
-python -m v5.app.cli run --plan examples/plan_demo_crypto20.json --live
+python -m app.cli run --plan examples/plan_demo_crypto20.json --live
 ```
 
 产出冻结方案（五个顶层指纹）+ 八个工位的 parcel + 每条候选的判据 + walk-forward 认证结果，落在 `$FLOW_DATA_ROOT/runs/<run_id>/`。
@@ -134,15 +134,15 @@ python -m v5.app.cli run --plan examples/plan_demo_crypto20.json --live
 ### 4. 看结果
 
 ```bash
-python -m v5.app.cli inspect --run-id <run_id>
-python -m v5.app.cli inspect --run-id <run_id> --station Verdict --full
+python -m app.cli inspect --run-id <run_id>
+python -m app.cli inspect --run-id <run_id> --station Verdict --full
 ```
 
 ### 5. 入库与复用
 
 ```bash
-python -m v5.app.cli promote --run-id <run_id> --candidate <candidate_id> --yes
-python -m v5.app.cli factors --status active
+python -m app.cli promote --run-id <run_id> --candidate <candidate_id> --yes
+python -m app.cli factors --status active
 ```
 
 入库后，后续计划的 `prior_pool` 里可以直接写 `db:<name>` 引用它——先验池回灌，新计划不必从零开始搜。
@@ -175,26 +175,28 @@ python -m v5.app.cli factors --status active
 
 ## 仓库结构
 
+八个包直接位于仓库根，按依赖方向自下而上排列（上→下 = 下层→上层）：
+
 ```
-v5/
-  contracts/        契约层：错误码、指纹、类型、plan schema（唯一真相）
-  facilities/       跨层设施：日志 / 缓存 / 追踪 / 时钟 / 随机 / 通知
-  storage/          存储层：对象、登记、索引、GC、账本
-  upstream/         供给链：采集、写入、append-only
-  runtime/          意图层：编译、门禁 B、票据、信封
-  capability/       能力层：12 能力 + 八个工位的 ops 实现 + 算子注册表
-  orchestration/    编排层：唯一执行器、能力桥、状态机、事件账本
-  app/              应用层：CLI 命令 + 三种输出格式
+contracts/        契约层：错误码、指纹、类型、plan schema（唯一真相）
+facilities/       跨层设施：日志 / 缓存 / 追踪 / 时钟 / 随机 / 通知
+storage/          存储层：对象、登记、索引、GC、账本
+upstream/         供给链：采集、写入、append-only
+runtime/          意图层：编译、门禁 B、票据、信封
+capability/       能力层：12 能力 + 八个工位的 ops 实现 + 算子注册表
+orchestration/    编排层：唯一执行器、能力桥、状态机、事件账本
+app/              应用层：CLI 命令 + 三种输出格式
+
 examples/
   plan_demo_crypto20.json   最小可跑样例计划
   plan_cs_2026q4.json       完整形态样例计划
   symbol_sets.json          标的集表（先复制到数据根 schemas/）
 tests/
-  conftest.py       v5_supply 夹具（在 tmp_path 造真实 parquet 供给）
-  v5/               36 个测试文件
-  fixtures/v5/      计划样例 + 黄金面板夹具（20 标的 × 1277 根 1d）
+  conftest.py       supply 夹具（在 tmp_path 造真实 parquet 供给）
+  test_v5_*.py      37 个测试文件（平铺，无子目录）
+  fixtures/         计划样例 + 黄金面板夹具（20 标的 × 1277 根 1d）
   reference/v4/     冻结的 V4 统计实现，只作逐位对拍的数值 oracle
-docs/architecture/v5/
+docs/
   INDEX.md          文档总索引（从这张表开始）
   01–20-*.md        架构与设计正文
   s0/               可实现化契约
@@ -208,15 +210,15 @@ docs/architecture/v5/
 ## 测试
 
 ```bash
-python -m pytest tests/v5 -q
+python -m pytest tests -q
 ```
 
 全部为可复现的单元/集成测试，含：
 
-- **黄金锚点对拍**：`test_v5_ac63_golden.py` 用手写 pandas 参考实现对同一面板重算，与流水线结果比对（容差 1e-9；跨版本相对冻结值 ±10%）。面板数据（20 标的 × 1277 根 1d）与冻结期望值一起提交在 `tests/fixtures/v5/golden/`，**fresh clone 直接可跑**，不需要先联网采集。
+- **黄金锚点对拍**：`test_v5_ac63_golden.py` 用手写 pandas 参考实现对同一面板重算，与流水线结果比对（容差 1e-9；跨版本相对冻结值 ±10%）。面板数据（20 标的 × 1277 根 1d）与冻结期望值一起提交在 `tests/fixtures/golden/`，**fresh clone 直接可跑**，不需要先联网采集。
 - **统计原语逐位对拍**：`test_v5_verdict.py` 与 `tests/reference/v4/` 里冻结的 V4 实现零容差比对——BH/Holm/DSR/置换 p/Newey-West 必须逐位一致。
 - **历史事故回归**：多空收益误用变换后 score、收益多延迟一根、`rebalance` 未真冻结、桥漏传 `horizon_bars`——四类都钉了回归测试。
-- **包独立性守卫**：AST 静态扫描，`v5/` 不得 import 旧包。
+- **包独立性守卫**：AST 静态扫描八个顶层包，不得 import 旧仓库的 `core` / `api` / `flow` / `web`。
 
 ---
 
@@ -237,7 +239,7 @@ python -m pytest tests/v5 -q
 
 ## 文档
 
-从 [`docs/architecture/v5/INDEX.md`](docs/architecture/v5/INDEX.md) 开始——按「你想知道什么」导航。
+从 [`docs/INDEX.md`](docs/INDEX.md) 开始——按「你想知道什么」导航。
 
 - 想知道怎么设计的 → `README.md` §1/§3 → `01`–`06`
 - 想知道一行结论怎么算出来的 → `06-evaluation.md`

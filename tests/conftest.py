@@ -1,4 +1,4 @@
-"""测试夹具：在 ``tmp_path`` 里造真实可读的 V5 供给。
+"""测试夹具：在 ``tmp_path`` 里造真实可读的供给。
 
 方案 B 之后「有没有数据」就等于「目录里有没有 parquet 文件」：编译期要现算
 checksum 才能得到 ``blueprint_digest``，所以任何走 CLI 的测试都必须有真数据，
@@ -22,8 +22,8 @@ if _TESTS_DIR not in sys.path:
 
 
 @pytest.fixture()
-def v5_supply(tmp_path):
-    """返回 ``write(**kwargs)``，参数缺省即 ``tests/fixtures/v5/plan_valid.json``
+def supply(tmp_path):
+    """返回 ``write(**kwargs)``，参数缺省即 ``tests/fixtures/plan_valid.json``
     的声明（4 个数据集、binance/futures、1d）。"""
 
     def write(
@@ -36,7 +36,7 @@ def v5_supply(tmp_path):
         exchange="binanceusdm",
         market="futures",
     ) -> None:
-        from v5.upstream import store
+        from upstream import store
 
         stamps = pd.date_range(start, end, freq="1D", tz="UTC")
         for dataset in datasets:
