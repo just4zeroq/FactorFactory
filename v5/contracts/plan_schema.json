@@ -1,0 +1,161 @@
+{
+  "schema_version": "1",
+  "comment": "Plan 键全集的唯一真相。文档 18-plan-schema.md 是它的可读渲染；改这里必须同步改文档，改文档必须同步改这里（tests/test_plan_schema.py 双向核对）。",
+  "types": {
+    "str": "字符串",
+    "int": "整数",
+    "float": "浮点（整数写法合法）",
+    "bool": "布尔",
+    "enum": "有限枚举，values 为合法集",
+    "list": "有序列表，item 为元素类型",
+    "interval": "<YYYY-MM-DD>..<YYYY-MM-DD> 或 reserved",
+    "map": "自由键值，由实现自己的 param_schema 校验（本层只管它是不是对象）"
+  },
+  "root": {
+    "plan": { "type": "str", "required": true, "doc": "计划名，只用于人读与日志" },
+    "baseline": { "type": "str", "required": true, "doc": "基线版本，形如 v1；必须已发布" },
+    "supply": {
+      "type": "block", "required": true, "keys": {
+        "exchange": { "type": "str", "required": true },
+        "market": { "type": "enum", "values": ["spot", "futures"], "required": false, "doc": "缺省 futures；决定 data/<dataset>/<exchange>/<market>/ 的落点，并进门禁 B 的第三道护栏" },
+        "datasets": { "type": "list", "item": { "type": "enum", "values": ["ohlcv", "funding", "open_interest", "basis"] }, "required": true },
+        "symbols": { "type": "str", "required": true, "doc": "标的集名；编译期解析成成员清单，不在此处内联" },
+        "frequency": { "type": "enum", "values": ["1m", "5m", "15m", "1h", "4h", "1d"], "required": true }
+      }
+    },
+    "caliber": {
+      "type": "block", "required": true, "constitutive": true,
+      "comment": "四个子块全部构成性；缺少的子块与键由 baseline 补全并在来源表里标出。",
+      "keys": {
+        "execution": {
+          "type": "block", "required": true, "constitutive": true, "keys": {
+            "entry": { "type": "enum", "values": ["next_open", "next_close"], "required": true, "doc": "current_close 被拒绝：权重由收盘算出却按同一根 bar 成交，是前视" },
+            "rebalance": { "type": "int", "min": 1, "required": true },
+            "annualisation": { "type": "enum", "values": ["calendar_365"], "required": true, "doc": "加密 24/7，只允许 365；252 在校验期即拒绝" },
+            "funding": { "type": "enum", "values": ["per_contract_events"], "required": true, "doc": "只按事件求和（I34）；结算周期是数据属性，不进口径" }
+          }
+        },
+        "label": {
+          "type": "block", "required": true, "constitutive": true, "keys": {
+            "horizon": { "type": "int", "min": 1, "required": true },
+            "transform": { "type": "enum", "values": ["cs_rank", "cs_zscore", "cs_rank_zscore"], "required": true },
+            "neutralise": { "type": "list", "item": { "type": "enum", "values": ["beta", "log_dollar_volume"] }, "required": true, "doc": "空列表合法" },
+            "neutralise_window": { "type": "int", "min": 2, "required_if": "neutralise 非空", "doc": "回归窗口 [t-w, t]" },
+            "overlap_policy": { "type": "enum", "values": ["independent_sample", "nw_adjusted"], "required_if": "rebalance < horizon" },
+            "min_width": { "type": "int", "min": 2, "required": true },
+            "width_policy": { "type": "enum", "values": ["keep", "drop"], "required": true }
+          }
+        },
+        "allocate": {
+          "type": "block", "required": true, "constitutive": true, "keys": {
+            "quantiles": { "type": "int", "min": 2, "required": true },
+            "long_short": { "type": "bool", "required": true },
+            "weighting": { "type": "enum", "values": ["equal", "liquidity", "inv_vol"], "required": true },
+            "max_weight": { "type": "float", "gt": 0, "le": 1, "required": true },
+            "net_exposure": { "type": "float", "ge": -1, "le": 1, "required": true },
+            "turnover_max": { "type": "float", "gt": 0, "required": true },
+            "min_members": { "type": "int", "min": 2, "required": true }
+          }
+        },
+        "net": {
+          "type": "block", "required": true, "constitutive": true, "keys": {
+            "cost_tiers": { "type": "list", "item": { "type": "int", "min": 0 }, "required": true, "doc": "bp，单边，必须严格升序" },
+            "slippage": { "type": "enum", "values": ["none", "fixed", "tiered"], "required": true },
+        "slippage_bp": { "type": "float", "ge": 0, "required": false, "doc": "单边滑点 bp 的显式值。缺省时沿用枚举的派生规则（fixed=最低档一半，tiered=逐档一半）；给了它就以它为准（slippage=none 仍为 0）" },
+            "fee_model": { "type": "enum", "values": ["taker", "maker", "taker_with_funding"], "required": true },
+            "max_leverage": { "type": "float", "ge": 1, "required": true, "doc": "本研究的硬上限，不是场所能力" },
+            "initial_margin": { "type": "float", "gt": 0, "le": 1, "required": true, "doc": "场所属性，只用于强平模拟" },
+            "maintenance_margin": { "type": "float", "gt": 0, "required": true },
+            "liquidation_buffer": { "type": "float", "ge": 0, "required": true },
+            "initial_cash": { "type": "float", "gt": 0, "required": false,
+              "doc": "回测初始权益。它只是把成交额折成权重的计量单位，必须与 BacktestConfig 同源；缺省取实现缺省注册表，不进 policy_digest" }
+          }
+        }
+      }
+    },
+    "boundary": {
+      "type": "block", "required": true, "keys": {
+        "impl": { "type": "str", "required": true },
+        "params": { "type": "map", "required": true },
+        "time_axis": {
+          "type": "block", "required": true, "keys": {
+            "mine": { "type": "interval", "required": true },
+            "oos": { "type": "interval", "required": true },
+            "holdout": { "type": "interval", "required": true, "doc": "reserved 表示保留，不参与本次运行" }
+          }
+        }
+      }
+    },
+    "panel": { "type": "block", "required": true, "keys": { "impl": { "type": "str", "required": true }, "params": { "type": "map", "required": true } } },
+    "target": { "type": "block", "required": true, "keys": { "impl": { "type": "str", "required": true }, "params": { "type": "map", "required": false, "doc": "跨度与变换不在此处，见 C20" } } },
+    "search": {
+      "type": "block", "required": true, "keys": {
+        "algorithms": {
+          "type": "list", "required": true, "item": {
+            "type": "block", "keys": {
+              "name": { "type": "str", "required": true },
+              "params": { "type": "map", "required": true }
+            }
+          }, "doc": "唯一的开放名字空间；每个 name 必须已在能力目录注册"
+        },
+        "prior_pool": { "type": "list", "item": { "type": "str" }, "required": false },
+        "trial_family": { "type": "str", "required": true, "doc": "试验族；DSR/BH 只在该族内累计" },
+        "seed": { "type": "int", "required": true }
+      }
+    },
+    "evidence": { "type": "block", "required": true, "keys": { "impl": { "type": "str", "required": true }, "params": { "type": "map", "required": true } } },
+    "verdict": {
+      "type": "block", "required": true, "keys": {
+        "impl": { "type": "enum", "values": ["sentinel"], "required": true, "doc": "唯一裁判，不可替换" },
+        "params": {
+          "type": "block", "required": true, "keys": {
+            "dsr_min": { "type": "float", "gt": 0, "le": 1, "required": true },
+            "fdr_max": { "type": "float", "gt": 0, "le": 1, "required": true },
+            "cost_adj_min": { "type": "float", "gt": 0, "required": true }
+          }
+        }
+      }
+    },
+    "portfolio": {
+      "type": "block", "required": false, "keys": {
+        "combiner": { "type": "enum", "values": ["fixed_ridge", "equal_weight", "score_weighted"], "required": true },
+        "window": {
+          "type": "block", "keys": {
+            "fit": { "type": "interval", "required": true },
+            "embargo": { "type": "int", "min": 0, "required": true },
+            "eval": { "type": "interval", "required": true }
+          }
+        }
+      }
+    },
+    "certify": { "type": "block", "required": false, "keys": { "impl": { "type": "enum", "values": ["walk_forward"], "required": true }, "params": { "type": "map", "required": true } } },
+    "operations": {
+      "type": "block", "required": false, "constitutive": false,
+      "keys": {
+        "cache": { "type": "bool", "required": false },
+        "workers": { "type": "int", "min": 1, "required": false },
+        "log_level": { "type": "enum", "values": ["debug", "info", "warning", "error"], "required": false }
+      }
+    }
+  },
+  "forbidden_paths": [
+    { "path": "*.params.horizon", "code": "E1020", "hint": "跨度写在 caliber.label.horizon" },
+    { "path": "*.params.rebalance", "code": "E1020", "hint": "再平衡写在 caliber.execution.rebalance" },
+    { "path": "*.params.entry", "code": "E1020", "hint": "入场价写在 caliber.execution.entry" },
+    { "path": "*.params.max_weight", "code": "E1020", "hint": "权重约束写在 caliber.allocate" },
+    { "path": "*.params.cost_tiers", "code": "E1020", "hint": "成本档写在 caliber.net.cost_tiers" },
+    { "path": "*.params.annualisation", "code": "E1020", "hint": "年化基准写在 caliber.execution.annualisation" },
+    { "path": "caliber.execution.funding_period", "code": "E1001", "hint": "资金费结算周期是数据属性，不是口径（I34）" },
+    { "path": "caliber.execution.funding_interval_hours", "code": "E1001", "hint": "同 I34" },
+    { "path": "caliber.label.min_cross_section", "code": "E1001", "hint": "用 caliber.label.min_width（截面）与 caliber.allocate.min_members（可交易成员）" }
+  ],
+  "cross_field": [
+    { "id": "X1", "rule": "maintenance_margin < initial_margin", "code": "E1004" },
+    { "id": "X2", "rule": "cost_tiers 严格升序且无重复", "code": "E1004" },
+    { "id": "X3", "rule": "max_weight * min_members <= 1", "code": "E1004" },
+    { "id": "X4", "rule": "rebalance < horizon 时 overlap_policy 必填", "code": "E1008" },
+    { "id": "X5", "rule": "neutralise 非空时 neutralise_window 必填", "code": "E1008" },
+    { "id": "X6", "rule": "portfolio.window.fit 的终点 + embargo <= eval 起点", "code": "E1021" },
+    { "id": "X7", "rule": "time_axis.oos 与 holdout 不重叠，且 mine 早于 oos", "code": "E1008" }
+  ]
+}

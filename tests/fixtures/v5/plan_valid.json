@@ -1,0 +1,143 @@
+{
+  "plan": "cs_2026q4_a",
+  "baseline": "v1",
+  "supply": {
+    "exchange": "binance",
+    "datasets": [
+      "ohlcv",
+      "funding",
+      "open_interest",
+      "basis"
+    ],
+    "symbols": "cs_top60_2026q3",
+    "frequency": "1d"
+  },
+  "caliber": {
+    "execution": {
+      "entry": "next_close",
+      "rebalance": 5,
+      "annualisation": "calendar_365",
+      "funding": "per_contract_events"
+    },
+    "label": {
+      "horizon": 5,
+      "transform": "cs_rank_zscore",
+      "neutralise": [
+        "beta",
+        "log_dollar_volume"
+      ],
+      "neutralise_window": 60,
+      "overlap_policy": "independent_sample",
+      "min_width": 40,
+      "width_policy": "drop"
+    },
+    "allocate": {
+      "quantiles": 5,
+      "long_short": true,
+      "weighting": "liquidity",
+      "max_weight": 0.05,
+      "net_exposure": 0.0,
+      "turnover_max": 0.35,
+      "min_members": 8
+    },
+    "net": {
+      "cost_tiers": [
+        20,
+        60,
+        150
+      ],
+      "slippage": "tiered",
+      "fee_model": "taker_with_funding",
+      "max_leverage": 1.0,
+      "initial_margin": 0.1,
+      "maintenance_margin": 0.005,
+      "liquidation_buffer": 0.01
+    }
+  },
+  "boundary": {
+    "impl": "pit_dynamic_topk",
+    "params": {
+      "k": 60,
+      "tier_window": 90,
+      "min_coverage": 0.8
+    },
+    "time_axis": {
+      "mine": "2024-01-01..2026-06-30",
+      "oos": "2026-07-01..2026-09-13",
+      "holdout": "reserved"
+    }
+  },
+  "panel": {
+    "impl": "point_in_time_align",
+    "params": {
+      "drop_unclosed": true
+    }
+  },
+  "target": {
+    "impl": "forward_return_cs"
+  },
+  "search": {
+    "algorithms": [
+      {
+        "name": "gp_symbolic",
+        "params": {
+          "population": 200,
+          "generations": 30,
+          "max_depth": 6
+        }
+      },
+      {
+        "name": "random_expression",
+        "params": {
+          "max_candidates": 300
+        }
+      }
+    ],
+    "prior_pool": [
+      "mom20",
+      "mom60",
+      "rev5",
+      "rv20",
+      "funding_carry"
+    ],
+    "trial_family": "cs_2026q4_a",
+    "seed": 20261116
+  },
+  "evidence": {
+    "impl": "two_stage_funnel",
+    "params": {
+      "null_model": "within_bar_cross_asset",
+      "prefilter": {
+        "min_coverage": 0.9
+      }
+    }
+  },
+  "verdict": {
+    "impl": "sentinel",
+    "params": {
+      "dsr_min": 0.95,
+      "fdr_max": 0.1,
+      "cost_adj_min": 1.0
+    }
+  },
+  "portfolio": {
+    "combiner": "fixed_ridge",
+    "window": {
+      "fit": "2024-07-01..2026-03-25",
+      "embargo": 5,
+      "eval": "2026-04-01..2026-06-30"
+    }
+  },
+  "certify": {
+    "impl": "walk_forward",
+    "params": {
+      "folds": 5,
+      "embargo": 5
+    }
+  },
+  "operations": {
+    "cache": true,
+    "workers": 1,
+    "log_level": "info"
+  }
+}

@@ -1,0 +1,10 @@
+# 安装：pip install -r requirements.txt
+#
+# 依赖清单的唯一真相是 v5/requirements.txt——每一行都写了「为什么装」和
+# 「为什么锁这个版本」。本文件只做转发，避免两处清单漂移。
+#
+# 特殊项：
+#   ml4t-backtest  非 PyPI，从 git 固定 commit 安装（执行语义是口径的一部分）
+#   qweave==0.6.2  精确锁（算子集合与 NaN/窗口语义是口径的一部分）
+#
+-r v5/requirements.txt

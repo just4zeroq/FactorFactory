@@ -1,0 +1,133 @@
+{
+  "plan": "demo_crypto20",
+  "baseline": "v1",
+  "supply": {
+    "exchange": "binanceusdm",
+    "datasets": [
+      "ohlcv",
+      "funding",
+      "open_interest",
+      "basis"
+    ],
+    "symbols": "crypto20",
+    "frequency": "1d"
+  },
+  "caliber": {
+    "execution": {
+      "entry": "next_close",
+      "rebalance": 5,
+      "annualisation": "calendar_365",
+      "funding": "per_contract_events"
+    },
+    "label": {
+      "horizon": 5,
+      "transform": "cs_rank_zscore",
+      "neutralise": [
+        "beta",
+        "log_dollar_volume"
+      ],
+      "neutralise_window": 60,
+      "overlap_policy": "independent_sample",
+      "min_width": 10,
+      "width_policy": "drop"
+    },
+    "allocate": {
+      "quantiles": 5,
+      "long_short": true,
+      "weighting": "liquidity",
+      "max_weight": 0.05,
+      "net_exposure": 0.0,
+      "turnover_max": 0.35,
+      "min_members": 8
+    },
+    "net": {
+      "cost_tiers": [
+        20,
+        60,
+        150
+      ],
+      "slippage": "tiered",
+      "fee_model": "taker_with_funding",
+      "max_leverage": 1.0,
+      "initial_margin": 0.1,
+      "maintenance_margin": 0.005,
+      "liquidation_buffer": 0.01
+    }
+  },
+  "boundary": {
+    "impl": "pit_dynamic_topk",
+    "params": {
+      "k": 20,
+      "tier_window": 90,
+      "min_coverage": 0.8
+    },
+    "time_axis": {
+      "mine": "2024-01-01..2026-03-31",
+      "oos": "2026-04-01..2026-06-30",
+      "holdout": "reserved"
+    }
+  },
+  "panel": {
+    "impl": "point_in_time_align",
+    "params": {
+      "drop_unclosed": true
+    }
+  },
+  "target": {
+    "impl": "forward_return_cs"
+  },
+  "search": {
+    "algorithms": [
+      {
+        "name": "random_expression",
+        "params": {
+          "max_candidates": 60
+        }
+      }
+    ],
+    "prior_pool": [
+      "mom20",
+      "mom60",
+      "rev5"
+    ],
+    "trial_family": "demo_crypto20",
+    "seed": 20261118
+  },
+  "evidence": {
+    "impl": "two_stage_funnel",
+    "params": {
+      "null_model": "within_bar_cross_asset",
+      "prefilter": {
+        "min_coverage": 0.9
+      }
+    }
+  },
+  "verdict": {
+    "impl": "sentinel",
+    "params": {
+      "dsr_min": 0.95,
+      "fdr_max": 0.1,
+      "cost_adj_min": 1.0
+    }
+  },
+  "portfolio": {
+    "combiner": "fixed_ridge",
+    "window": {
+      "fit": "2024-07-01..2025-12-20",
+      "embargo": 5,
+      "eval": "2026-01-01..2026-03-31"
+    }
+  },
+  "certify": {
+    "impl": "walk_forward",
+    "params": {
+      "folds": 3,
+      "embargo": 5
+    }
+  },
+  "operations": {
+    "cache": true,
+    "workers": 1,
+    "log_level": "info"
+  }
+}

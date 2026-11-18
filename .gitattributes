@@ -1,0 +1,16 @@
+# 统一换行：源码与文档一律 LF 入库，避免 Windows/Linux 之间产生整文件 diff。
+* text=auto eol=lf
+
+# 二进制：不要做换行转换，也不要尝试文本 diff。
+*.parquet binary
+*.feather binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.zip binary
+*.gz binary
+
+# 生成物：折叠 diff，PR 里不淹没真实改动。
+*.json      linguist-language=JSON
+docs/**/*.md linguist-documentation

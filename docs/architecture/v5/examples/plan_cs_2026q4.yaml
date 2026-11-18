@@ -1,0 +1,95 @@
+# 规范计划样例（唯一一份，文档不得各自再抄一遍）
+#
+# CLI 只读 JSON：可运行形式见 `examples/plan_cs_2026q4.json`（内容等价，
+# 由本文件生成）。本文件留注释，是给人读的规范文本。
+# 这份文件按 v5/contracts/plan_schema.json 校验。
+# 改它的任何一行，都必须同时通过 schema 校验，否则测试失败。
+# 文档（README / 17-walkthrough / 18-plan-schema）只引用本文件与其中的片段。
+
+plan: cs_2026q4_a
+baseline: v1
+
+supply:
+  exchange: binance
+  datasets: [ohlcv, funding, open_interest, basis]
+  symbols: cs_top60_2026q3        # 标的集名，编译期解析成成员清单
+  frequency: 1d
+
+caliber:                          # 口径块：全链唯一来源，工位不得自带同名参数
+  execution:
+    entry: next_close
+    rebalance: 5
+    annualisation: calendar_365   # 不是 365 / 252：年化基准是枚举，不是数字
+    funding: per_contract_events  # 只按事件求和；结算周期是数据属性，不是口径（I34）
+  label:
+    horizon: 5
+    transform: cs_rank_zscore
+    neutralise: [beta, log_dollar_volume]
+    neutralise_window: 60
+    overlap_policy: independent_sample
+    min_width: 40
+    width_policy: drop
+  allocate:
+    quantiles: 5
+    long_short: true
+    weighting: liquidity
+    max_weight: 0.05
+    net_exposure: 0.0
+    turnover_max: 0.35
+    min_members: 8
+  net:
+    cost_tiers: [20, 60, 150]     # bp，单边
+    slippage: tiered
+    fee_model: taker_with_funding
+    max_leverage: 1.0             # 本研究的硬上限；不是场所能力
+    initial_margin: 0.10          # 场所属性，只用于强平模拟
+    maintenance_margin: 0.005
+    liquidation_buffer: 0.01
+
+boundary:
+  impl: pit_dynamic_topk
+  params: { k: 60, tier_window: 90, min_coverage: 0.8 }
+  time_axis:
+    mine: 2024-01-01..2026-06-30
+    oos: 2026-07-01..2026-09-13
+    holdout: reserved
+
+panel:
+  impl: point_in_time_align
+  params: { drop_unclosed: true }
+
+target:
+  impl: forward_return_cs          # 只写实现名；跨度与变换在 caliber 里
+
+search:
+  algorithms:                      # 唯一的开放名字空间
+    - name: gp_symbolic
+      params: { population: 200, generations: 30, max_depth: 6 }
+    - name: random_expression
+      params: { max_candidates: 300 }
+  prior_pool: [mom20, mom60, rev5, rv20, funding_carry]
+  trial_family: cs_2026q4_a
+  seed: 20261116
+
+evidence:
+  impl: two_stage_funnel
+  params: { null_model: within_bar_cross_asset, prefilter: { min_coverage: 0.9 } }
+
+verdict:
+  impl: sentinel                   # 固定，唯一，不可替换
+  params: { dsr_min: 0.95, fdr_max: 0.10, cost_adj_min: 1.0 }
+
+portfolio:
+  combiner: fixed_ridge            # 封闭白名单：能选，不能新增
+  window: { fit: 2024-07-01..2026-03-25, embargo: 5, eval: 2026-04-01..2026-06-30 }
+# fit 终点 03-25 加 embargo 5 => 03-30，仍早于 eval 起点 04-01（X6）。
+# 原来写 03-31，加 5 天已是 04-05，落进 eval 区——样例自己违反了规则，是校验器抓出来的。
+
+certify:
+  impl: walk_forward
+  params: { folds: 5, embargo: 5 }
+
+operations:                        # 非构成性：改了不影响任何指纹
+  cache: true
+  workers: 1
+  log_level: info

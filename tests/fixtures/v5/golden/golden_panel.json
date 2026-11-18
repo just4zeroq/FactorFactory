@@ -1,0 +1,82 @@
+{
+  "ruling": "2026-11-17：AC63 锚点不依赖 V4 任何内容；黄金面板 = V5 自采（ccxt）数据冻结窗口，期望值由独立复算测定。",
+  "window": {
+    "start": "2023-01-01",
+    "end": "2026-06-30",
+    "bars": 1277
+  },
+  "exchange": "binanceusdm",
+  "market": "futures",
+  "timeframe": "1d",
+  "symbols": [
+    "BTC/USDT:USDT",
+    "ETH/USDT:USDT",
+    "SOL/USDT:USDT",
+    "BNB/USDT:USDT",
+    "XRP/USDT:USDT",
+    "DOGE/USDT:USDT",
+    "ADA/USDT:USDT",
+    "AVAX/USDT:USDT",
+    "LINK/USDT:USDT",
+    "DOT/USDT:USDT",
+    "LTC/USDT:USDT",
+    "BCH/USDT:USDT",
+    "TRX/USDT:USDT",
+    "ATOM/USDT:USDT",
+    "NEAR/USDT:USDT",
+    "APT/USDT:USDT",
+    "OP/USDT:USDT",
+    "INJ/USDT:USDT",
+    "ETC/USDT:USDT",
+    "FIL/USDT:USDT"
+  ],
+  "checksums": {
+    "BTC/USDT:USDT": "sha256:52cdf50090ec065e26de53846e7b6e2ae5f0d5d1fd67987e3ad0a18c668de832",
+    "ETH/USDT:USDT": "sha256:a15818cd69e5f84aec3f16633f82ba0c2df55f49fb54e09084fb953c2f6dc2dd",
+    "SOL/USDT:USDT": "sha256:ebd826665c2afec8b8336a3007113972a4f839da3685df352b0a3b4003fd1bba",
+    "BNB/USDT:USDT": "sha256:23b79ddbbab3379dfc65c4e08790a8d974b9089d0320edf2eebca4f83020243e",
+    "XRP/USDT:USDT": "sha256:ba6f5e06adc1ddbe1713dc2a290ba3773a60382386a1eb9dbc9d47862b6368b3",
+    "DOGE/USDT:USDT": "sha256:731b6d2283dfe514932200d101a5b4bbd12cff451f14e17602c318eed419a86c",
+    "ADA/USDT:USDT": "sha256:12a6f62d6e0f3e7f5e7d10b97762c8503f8ea72683132b62c672cf79810f3a8a",
+    "AVAX/USDT:USDT": "sha256:c798c721811d9f921df9375cd4e7e94b715e9b427a43b59340a65efd2455ae15",
+    "LINK/USDT:USDT": "sha256:487f5b82e3f2cb3baf47f406ee6a5f06c3c4e2dc4a0c11a4d0d35dd03560097b",
+    "DOT/USDT:USDT": "sha256:5ce71c06c686110715c48fb3f4d2ebabd69cd7ad18f81fd54a2bed76530a7c62",
+    "LTC/USDT:USDT": "sha256:057eb4970436135890988eb89b5c58afa2319a34f0f9c01b2eb7b05f45c8df68",
+    "BCH/USDT:USDT": "sha256:9ffc20ea40508d49d8eba8687092f215e3b72c52d15ab5a546cf301a8866ce59",
+    "TRX/USDT:USDT": "sha256:3510ef490fa59e93bec9d8953cf768b568f0e3ced0e1b2af6b23b46d7aadcebb",
+    "ATOM/USDT:USDT": "sha256:462e6bc2b7f1a44f3349998be586620759cdfbb068d3fb82c829482ec5e7e7fd",
+    "NEAR/USDT:USDT": "sha256:c21d0dd0c1eb843d7275b532e40926c7dc2d106cd9b847c535f44a7d6e1fe987",
+    "APT/USDT:USDT": "sha256:cc4d26ea51d81f5afe7965fcd8d1b242009224ed7de0f52de3a8244f810c3f87",
+    "OP/USDT:USDT": "sha256:e0c9a0ae67ddf01e5725255f830fd46cf8bc4a81c873f5f24b4f0341129556e5",
+    "INJ/USDT:USDT": "sha256:c85b970608eb714270714bc4e09b19ba8bae84520fddcd03f1f701f92f92ad7c",
+    "ETC/USDT:USDT": "sha256:ecbf959efc9c9bbdc158fd859c9689c7b92755a7710a762ee3051a7cbb33b4ea",
+    "FIL/USDT:USDT": "sha256:0123721f2cd17610b9039f9e784af0818ab4bffe502535fedd25a20b172a65b7"
+  },
+  "caliber": {
+    "entry": "next_close",
+    "rebalance": 5,
+    "horizon": 5,
+    "transform": "cs_rank",
+    "lookback": 60,
+    "long_short_share": 0.3
+  },
+  "expected": {
+    "gross_sharpe": 1.1671935881346232,
+    "gross_return": 0.0013472392664799647,
+    "sr": 0.13660967655524422,
+    "turnover": 93.16666666666666,
+    "n_periods": 1271,
+    "k": 6,
+    "n_symbols": 20,
+    "n_bars": 1277
+  },
+  "pipeline_metrics": {
+    "gross_sharpe": 1.1671935881346232,
+    "gross_return": 0.0013472392664799647,
+    "sr": 0.13660967655524422,
+    "turnover": 93.16666666666666,
+    "n_periods": 1271
+  },
+  "pipeline_run_id": "20261117T154943Z-11633943",
+  "pipeline_n_trials": 2
+}

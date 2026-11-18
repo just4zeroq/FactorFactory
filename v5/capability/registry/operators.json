@@ -1,0 +1,209 @@
+{
+  "schema_version": "1",
+  "basis": "qweave 0.6.2 Alpha158 可用算子的因果安全子集；impl_symbol 显式映射到 qweave 函数名",
+  "operators": [
+    {
+      "name": "ref",
+      "impl_symbol": "delay",
+      "arity": 2,
+      "param_domain": {
+        "lag": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "delay",
+      "impl_symbol": "delay",
+      "arity": 2,
+      "param_domain": {
+        "lag": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "sum",
+      "impl_symbol": "ts_sum",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "mean",
+      "impl_symbol": "ts_mean",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "std",
+      "impl_symbol": "ts_std",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 2,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "max",
+      "impl_symbol": "ts_max",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "min",
+      "impl_symbol": "ts_min",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "rank",
+      "impl_symbol": "rank",
+      "arity": 1,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "scale",
+      "impl_symbol": "scale",
+      "arity": 1,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "delta",
+      "impl_symbol": "delta",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "corr",
+      "impl_symbol": "correlation",
+      "arity": 3,
+      "param_domain": {
+        "window": {
+          "min": 2,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "cov",
+      "impl_symbol": "covariance",
+      "arity": 3,
+      "param_domain": {
+        "window": {
+          "min": 2,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "abs",
+      "impl_symbol": "abs",
+      "arity": 1,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "log",
+      "impl_symbol": "log",
+      "arity": 1,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "sign",
+      "impl_symbol": "sign",
+      "arity": 1,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "add",
+      "impl_symbol": "__add__",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "sub",
+      "impl_symbol": "__sub__",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "mul",
+      "impl_symbol": "__mul__",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v1"
+    },
+    {
+      "name": "div",
+      "impl_symbol": "__truediv__",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v1"
+    }
+  ],
+  "_self_check_note": "加载器会拒绝：负位移/窗口<=0/center/bfill/缺 impl_symbol/degenerate_policy=常数替换。本表全部因果安全。"
+}

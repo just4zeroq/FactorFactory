@@ -1,0 +1,87 @@
+{
+  "schema_version": "1",
+  "basis": "ccxt OHLCV + funding/OI/basis；只登记因果安全字段，不登记股票市值/行业字段",
+  "fields": [
+    {
+      "name": "open",
+      "causal_class": "price",
+      "available_lag": 0,
+      "unit": "quote",
+      "datasets": [
+        "ohlcv"
+      ]
+    },
+    {
+      "name": "high",
+      "causal_class": "price",
+      "available_lag": 0,
+      "unit": "quote",
+      "datasets": [
+        "ohlcv"
+      ]
+    },
+    {
+      "name": "low",
+      "causal_class": "price",
+      "available_lag": 0,
+      "unit": "quote",
+      "datasets": [
+        "ohlcv"
+      ]
+    },
+    {
+      "name": "close",
+      "causal_class": "price",
+      "available_lag": 0,
+      "unit": "quote",
+      "datasets": [
+        "ohlcv"
+      ]
+    },
+    {
+      "name": "volume",
+      "causal_class": "price",
+      "available_lag": 0,
+      "unit": "base",
+      "datasets": [
+        "ohlcv"
+      ]
+    },
+    {
+      "name": "vwap",
+      "causal_class": "price",
+      "available_lag": 0,
+      "unit": "quote",
+      "datasets": [
+        "ohlcv"
+      ]
+    },
+    {
+      "name": "funding_rate",
+      "causal_class": "event",
+      "available_lag": 0,
+      "unit": "rate",
+      "datasets": [
+        "funding"
+      ]
+    },
+    {
+      "name": "open_interest",
+      "causal_class": "event",
+      "available_lag": 0,
+      "unit": "contracts",
+      "datasets": [
+        "open_interest"
+      ]
+    },
+    {
+      "name": "basis",
+      "causal_class": "event",
+      "available_lag": 0,
+      "unit": "quote",
+      "datasets": [
+        "basis"
+      ]
+    }
+  ]
+}

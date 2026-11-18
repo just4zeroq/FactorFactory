@@ -1,0 +1,76 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# 虚拟环境：依赖版本是研究口径的一部分（见 requirements.txt 的锁定说明），
+# 环境本身不入库，用 requirements 复现。
+venv/
+.venv/
+env/
+ENV/
+venv.bak/
+
+# 测试与类型检查缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# 编辑器 / 操作系统
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# 运行时数据（不进版本库）
+# ---------------------------------------------------------------------------
+# 供给数据根、票据、账本、日志、缓存都由运行目录承载，默认在仓库外。
+data/
+logs/
+.cache/
+*.log
+
+# 单次运行的产物目录（ticket / parcel / 账本 / 事件流）随 `run` / `pipeline`
+# 生成，属可再生产物。验证基线不在这里——黄金面板夹具在
+# tests/fixtures/v5/golden/，随仓库提交。
+user_workspace/
+runs/
+reports/
+
+# 因子库是研究产物，随 promote 增长，不入库
+factor_db/
+factor_db_*/
+db/
+
+# 计划与结果的临时草稿
+tmp/
+*.tmp
+.scratch/
+
+# ---------------------------------------------------------------------------
+# 本地环境变量 / 凭据
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.yaml
+secrets.yml

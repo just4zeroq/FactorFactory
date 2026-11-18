@@ -1,0 +1,825 @@
+{
+  "schema_version": "1",
+  "comment": "十二项能力的 param_schema / inputs_schema / outputs_schema（s0/04 §1.1/§2/§3）。契约数据，不是业务代码：运行期校验只读这里。unknown key 一律 E1003，类型/范围 E1004，缺必填 E1008。",
+  "types": {
+    "int": "整数，不收 bool",
+    "float": "实数，不收 bool",
+    "bool": "只收 true/false",
+    "str": "字符串",
+    "enum": "字符串枚举",
+    "list": "列表，item 指定元素 schema",
+    "map": "映射，keys 指定已知键 schema",
+    "duration": "正整数 bar，或 '5bar' / '5d' 形式",
+    "timestamp": "UTC RFC3339 字符串",
+    "ref": "引用标识（字符串），不接受内联内容"
+  },
+  "defaults": {
+    "comment": "实现缺省值（G10/E8/G14）：与 baseline 的口径默认值不是一回事——后者编译期展开进 plan 并进指纹，这里只在调用方未显式给值时由实现读取，不写进 plan、不进指纹。单一真相在此，实现代码不得再写第二份。",
+    "boundary": {
+      "tier_edges": [0.3333333333333333, 0.6666666666666666]
+    },
+    "allocate": {
+      "l2_regularisation": 0.001
+    },
+    "search": {
+      "population": 20,
+      "generations": 3,
+      "max_depth": 4,
+      "max_candidates": 40,
+      "genome_len": 7
+    },
+    "pipeline": {
+      "n_trials_drop_ratio": 0.5
+    },
+    "backtest": {
+      "initial_cash": 1000000.0,
+      "base_ts": "2020-01-01T00:00:00Z"
+    },
+    "cli": {
+      "master_seed": 42,
+      "family": "family_v1"
+    }
+  },
+  "capabilities": {
+    "read": {
+      "inputs": [
+        {
+          "kind": "supply",
+          "required": true
+        }
+      ],
+      "outputs": {
+        "stream_refs": "list",
+        "field_manifest": "map",
+        "coverage": "map",
+        "missing_ranges": "list",
+        "stream": "opaque"
+      },
+      "params": {
+        "datasets": {
+          "type": "list",
+          "required": true,
+          "min_len": 1,
+          "item": {
+            "type": "enum",
+            "values": [
+              "ohlcv",
+              "funding",
+              "open_interest",
+              "basis"
+            ]
+          }
+        },
+        "fields": {
+          "type": "map",
+          "required": true,
+          "min_len": 1,
+          "item": {
+            "type": "list",
+            "min_len": 1,
+            "item": {
+              "type": "str"
+            }
+          }
+        },
+        "frequency": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "1m",
+            "5m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "window": {
+          "type": "map",
+          "required": true,
+          "keys": {
+            "start": {
+              "type": "timestamp",
+              "required": true
+            },
+            "end": {
+              "type": "timestamp",
+              "required": true
+            }
+          }
+        },
+        "symbols": {
+          "type": "ref",
+          "required": true
+        }
+      }
+    },
+    "boundary": {
+      "inputs": [
+        {
+          "kind": "pin",
+          "required": true
+        },
+        {
+          "kind": "field_stream",
+          "required": true
+        }
+      ],
+      "outputs": {
+        "observable_mask": "array",
+        "tradable_mask": "array",
+        "tiers": "array",
+        "reason_codes": "array",
+        "reason_code_legend": "map",
+        "axis_resolved": "map",
+        "scope": "opaque"
+      },
+      "params": {
+        "k": {
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        "tier_window": {
+          "type": "duration",
+          "required": true
+        },
+        "tier_edges": {
+          "type": "list",
+          "required": false,
+          "item": {
+            "type": "float"
+          }
+        },
+        "min_coverage": {
+          "type": "float",
+          "required": true,
+          "ge": 0,
+          "le": 1
+        },
+        "time_axis": {
+          "type": "map",
+          "required": true,
+          "keys": {
+            "mine": {
+              "type": "str",
+              "required": true
+            },
+            "oos": {
+              "type": "str",
+              "required": false
+            },
+            "holdout": {
+              "type": "str",
+              "required": false
+            }
+          }
+        },
+        "mask_policy": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "pit_dynamic",
+            "static"
+          ]
+        }
+      }
+    },
+    "align": {
+      "inputs": [
+        {
+          "kind": "field_stream",
+          "required": true
+        },
+        {
+          "kind": "scope",
+          "required": true
+        }
+      ],
+      "outputs": {
+        "panel_ref": "str",
+        "shape": "map",
+        "time_index_ref": "str",
+        "field_manifest": "list",
+        "causal_report": "map",
+        "quality_report": "map",
+        "panel": "opaque",
+        "holdout_visibility": "str"
+      },
+      "params": {
+        "drop_unclosed": {
+          "type": "bool",
+          "required": true
+        },
+        "causal_probe": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "none",
+            "strict"
+          ]
+        },
+        "quality_gates": {
+          "type": "map",
+          "required": true,
+          "keys": {
+            "max_missing_ratio": {
+              "type": "float",
+              "required": false,
+              "ge": 0,
+              "le": 1
+            },
+            "min_obs": {
+              "type": "int",
+              "required": false,
+              "min": 1
+            }
+          }
+        }
+      }
+    },
+    "label": {
+      "inputs": [
+        {
+          "kind": "panel",
+          "required": true
+        }
+      ],
+      "outputs": {
+        "label_ref": "str",
+        "score_ref": "str",
+        "score": "array",
+        "valid_mask": "array",
+        "width_series": "array",
+        "dropped_bars": "map",
+        "overlap_policy_used": "str",
+        "effective_n": "int",
+        "horizon_bars": "int",
+        "raw": "array"
+      },
+      "comment": "score 是 score_ref 所指的内容本身：values 与 ref 必须同源产出，ref = digest(score)。没有数据通道时 ref 指向不了任何东西。",
+      "params": {
+        "horizon": {
+          "type": "duration",
+          "required": true
+        },
+        "rebalance": {
+          "type": "duration",
+          "required": true
+        },
+        "entry": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "next_open",
+            "next_close",
+            "close"
+          ],
+          "doc": "close 与 next_close 的区别在成本侧：前者假设按当根收盘成交，编译期要求与 caliber.execution.entry 同值"
+        },
+        "transform": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "cs_rank",
+            "cs_zscore",
+            "cs_rank_zscore",
+            "none"
+          ]
+        },
+        "neutralise": {
+          "type": "list",
+          "required": true,
+          "max_len": 2,
+          "item": {
+            "type": "enum",
+            "values": [
+              "beta",
+              "log_dollar_volume"
+            ]
+          }
+        },
+        "overlap_policy": {
+          "type": "enum",
+          "required": false,
+          "values": [
+            "independent_sample",
+            "nw_adjusted"
+          ]
+        },
+        "min_width": {
+          "type": "int",
+          "required": false,
+          "min": 2
+        },
+        "width_policy": {
+          "type": "enum",
+          "required": false,
+          "values": [
+            "keep",
+            "drop"
+          ]
+        }
+      }
+    },
+    "search": {
+      "additional": true,
+      "inputs": [
+        {
+          "kind": "panel",
+          "required": true
+        },
+        {
+          "kind": "label",
+          "required": true
+        },
+        {
+          "kind": "market_view",
+          "required": true
+        }
+      ],
+      "outputs": {
+        "candidates": "list",
+        "family": "str",
+        "count": "int",
+        "dedup_digest": "str",
+        "fitted_state_ref": "str",
+        "generators": "list",
+        "declared_at": "str",
+        "n_trials": "int",
+        "fitted_state": "map",
+        "unobservable": "list"
+      },
+      "params": {
+        "prior_pool": {
+          "type": "list",
+          "required": false,
+          "item": {
+            "type": "ref"
+          }
+        },
+        "max_candidates": {
+          "type": "int",
+          "required": false,
+          "min": 1
+        }
+      }
+    },
+    "observe": {
+      "inputs": [
+        {
+          "kind": "candidate_set",
+          "required": true
+        },
+        {
+          "kind": "panel",
+          "required": true
+        },
+        {
+          "kind": "label",
+          "required": true
+        }
+      ],
+      "outputs": {
+        "per_candidate": "list",
+        "method_ids": "map",
+        "redundancy": "map"
+      },
+      "params": {
+        "prefilter": {
+          "type": "map",
+          "required": true,
+          "keys": {
+            "min_coverage": {
+              "type": "float",
+              "required": false,
+              "ge": 0,
+              "le": 1
+            },
+            "max_turnover": {
+              "type": "float",
+              "required": false,
+              "gt": 0
+            },
+            "min_abs_ic": {
+              "type": "float",
+              "required": false,
+              "ge": 0
+            },
+            "quantile": {
+              "type": "float",
+              "required": false,
+              "gt": 0,
+              "le": 0.5,
+              "doc": "分位多空每边取多少比例的标的；缺省三分之一，与历史口径逐位一致"
+            }
+          }
+        },
+        "null_model": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "within_bar_cross_asset",
+            "block_bootstrap",
+            "time_shift"
+          ]
+        },
+        "metrics": {
+          "type": "list",
+          "required": true,
+          "min_len": 1,
+          "item": {
+            "type": "enum",
+            "values": [
+              "ic",
+              "rank_ic",
+              "pearson_ic",
+              "icir",
+              "turnover",
+              "gross_sharpe",
+              "hit_rate",
+              "group_returns",
+              "monotonicity",
+              "ic_decay"
+            ]
+          }
+        },
+        "cost_attribution": {
+          "type": "bool",
+          "required": true
+        },
+        "dedup": {
+          "type": "map",
+          "required": false,
+          "keys": {
+            "corr": {
+              "type": "float",
+              "required": false,
+              "ge": 0,
+              "le": 1
+            },
+            "method": {
+              "type": "enum",
+              "required": false,
+              "values": ["spearman", "pearson"]
+            },
+            "rep_by": {
+              "type": "enum",
+              "required": false,
+              "values": ["abs_ic", "hac_t", "abs_gross_sharpe"]
+            }
+          }
+        },
+        "groups": {
+          "type": "int",
+          "required": false,
+          "min": 2,
+          "max": 20,
+          "doc": "分层单调性的组数（按 score 截面等分）。缺省不分组；请求 group_returns / monotonicity 时必须显式给出——3/5/10 组算出的单调性不是同一个量，没有默认值"
+        },
+        "ic_decay": {
+          "type": "list",
+          "required": false,
+          "min_len": 1,
+          "max_len": 12,
+          "item": {
+            "type": "int",
+            "min": 1
+          },
+          "doc": "IC 衰减曲线的跨度列表，单位 bar（不是 duration）：横轴就是「多持有几根 bar」。请求 ic_decay 指标时必须显式给出，没有默认集合"
+        },
+        "n_permutations": {
+          "type": "int",
+          "required": true,
+          "min": 1
+        }
+      }
+    },
+    "verdict": {
+      "inputs": [
+        {
+          "kind": "observation_set",
+          "required": true
+        }
+      ],
+      "outputs": {
+        "per_candidate": "list",
+        "n_trials_used": "int"
+      },
+      "params": {
+        "dsr_min": {
+          "type": "float",
+          "required": true,
+          "ge": 0,
+          "le": 1
+        },
+        "fdr_max": {
+          "type": "float",
+          "required": true,
+          "gt": 0,
+          "le": 1
+        },
+        "cost_adj_min": {
+          "type": "float",
+          "required": true,
+          "ge": 0
+        },
+        "family": {
+          "type": "str",
+          "required": true
+        },
+        "sigma_mode": {
+          "type": "enum",
+          "required": false,
+          "values": [
+            "sampling",
+            "cross_section"
+          ]
+        }
+      }
+    },
+    "combine": {
+      "comment": "S7 组合域：三个合成器（equal_weight / score_weighted / fixed_ridge）共享同一实现，实现名 = 计划的 portfolio.combiner；权重只在 fit 段拟合一次并在 eval 段冻结；orthogonalise=symmetric 为 Löwdin 正交化，corr_max<1 为按 |fit IC| 的贪心去相关。score 是数组通道，weights_ref 由下游 allocate 产出。",
+      "inputs": [
+        {
+          "kind": "candidate_set",
+          "required": true
+        },
+        {
+          "kind": "verdict_set",
+          "required": true
+        },
+        {
+          "kind": "panel",
+          "required": true
+        },
+        {
+          "kind": "label",
+          "required": true
+        }
+      ],
+      "outputs": {
+        "score_ref": "str",
+        "member_weights_ref": "str",
+        "members": "list",
+        "domain_digest": "str",
+        "windows_used": "map",
+        "score": "array",
+        "dropped_members": "list"
+      },
+      "params": {
+        "domain": {
+          "type": "ref",
+          "required": true
+        },
+        "orthogonalise": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "none",
+            "symmetric"
+          ]
+        },
+        "corr_max": {
+          "type": "float",
+          "required": true,
+          "gt": 0,
+          "le": 1
+        },
+        "window": {
+          "type": "map",
+          "required": true,
+          "keys": {
+            "fit": {
+              "type": "str",
+              "required": true
+            },
+            "embargo": {
+              "type": "duration",
+              "required": true
+            },
+            "eval": {
+              "type": "str",
+              "required": true
+            }
+          }
+        }
+      }
+    },
+    "allocate": {
+      "comment": "约束参数全部来自 policy_view.allocate；此处只允许构造选择，写 max_weight/turnover_max 等即 E1003（§3.9 不得覆盖）。price 是可选输入，仅 weighting=inv_vol 需要（按资产收益波动加权）；缺 price 而口径要 inv_vol 时 fail-closed，不拿分数波动冒充资产波动。",
+      "inputs": [
+        {
+          "kind": "score",
+          "required": true
+        },
+        {
+          "kind": "tradable_mask",
+          "required": true
+        },
+        {
+          "kind": "tiers",
+          "required": true
+        },
+        {
+          "kind": "price",
+          "required": false
+        }
+      ],
+      "outputs": {
+        "weights_ref": "str",
+        "weights": "array",
+        "turnover_series": "array",
+        "effective_members": "int",
+        "binding_constraints": "list",
+        "dropped_bars": "map"
+      },
+      "params": {
+        "top_k": {
+          "type": "int",
+          "required": false,
+          "min": 2
+        }
+      }
+    },
+    "evaluate": {
+      "inputs": [
+        {
+          "kind": "payload",
+          "required": true
+        },
+        {
+          "kind": "panel",
+          "required": true
+        }
+      ],
+      "outputs": {
+        "values_ref": "str",
+        "valid_mask_ref": "str",
+        "node_stats": "map",
+        "operators_used": "list",
+        "values": "array",
+        "valid_mask": "array"
+      },
+      "params": {
+        "operator_set": {
+          "type": "ref",
+          "required": true
+        },
+        "nan_policy": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "propagate",
+            "drop"
+          ]
+        },
+        "node_cache": {
+          "type": "bool",
+          "required": true
+        }
+      }
+    },
+    "backtest": {
+      "inputs": [
+        {
+          "kind": "position",
+          "required": true
+        },
+        {
+          "kind": "price",
+          "required": true
+        },
+        {
+          "kind": "funding",
+          "required": false
+        },
+        {
+          "kind": "tiers",
+          "required": true
+        },
+        {
+          "kind": "time",
+          "required": false
+        }
+      ],
+      "outputs": {
+        "net_return_ref": "str",
+        "net_return": "array",
+        "cost_breakdown": "map",
+        "turnover": "array",
+        "funding_total": "float",
+        "sharpe": "float",
+        "annualisation_used": "str",
+        "bars_per_year": "float",
+        "bars_per_year_source": "str"
+      },
+      "outputs_by": {
+        "param": "detail",
+        "cases": {
+          "summary": {
+            "net_return_ref": "str",
+            "net_return": "array",
+            "cost_breakdown": "map",
+            "turnover": "array",
+            "funding_total": "float",
+            "sharpe": "float",
+            "annualisation_used": "str",
+            "bars_per_year": "float",
+            "bars_per_year_source": "str",
+            "missing_price_cells": "int"
+          },
+          "full": {
+            "net_return_ref": "str",
+            "net_return": "array",
+            "cost_breakdown": "map",
+            "turnover": "array",
+            "funding_total": "float",
+            "sharpe": "float",
+            "annualisation_used": "str",
+            "bars_per_year": "float",
+            "bars_per_year_source": "str",
+            "missing_price_cells": "int",
+            "ledger_ref": "str",
+            "fills_ref": "str",
+            "equity_ref": "str",
+            "long_short_split": "map",
+            "drawdown_episodes": "list",
+            "attribution": "map"
+          }
+        }
+      },
+      "params": {
+        "detail": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "summary",
+            "full"
+          ]
+        },
+        "include_funding": {
+          "type": "bool",
+          "required": false
+        }
+      }
+    },
+    "certify": {
+      "comment": "认证只读四类对象：组合产物（分数+成员+三段窗口+证据等级）、面板（时间轴与价格）、可交易掩码与分层、裁决集合。不用 all_upstream：七个工位里 `score` 出现两次（label 的标签分与 combine 的合成分），按 kind 取会把两件不同的东西当同一件。",
+      "inputs": [
+        {
+          "kind": "portfolio",
+          "required": true
+        },
+        {
+          "kind": "panel",
+          "required": true
+        },
+        {
+          "kind": "tradable_mask",
+          "required": true
+        },
+        {
+          "kind": "tiers",
+          "required": true
+        },
+        {
+          "kind": "verdict_set",
+          "required": true
+        }
+      ],
+      "outputs": {
+        "metrics": "map",
+        "folds_detail": "list",
+        "reproducible_manifest": "map",
+        "verdict_refs": "list",
+        "evidence_grade": "str"
+      },
+      "params": {
+        "folds": {
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        "embargo": {
+          "type": "duration",
+          "required": true
+        },
+        "oos_window": {
+          "type": "map",
+          "required": true,
+          "keys": {
+            "start": {
+              "type": "timestamp",
+              "required": true
+            },
+            "end": {
+              "type": "timestamp",
+              "required": true
+            }
+          }
+        }
+      }
+    }
+  }
+}
