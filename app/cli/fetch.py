@@ -104,7 +104,22 @@ def cmd_fetch(args: Any) -> dict[str, Any]:
         raise FlowError(E1004, "--start 必须早于 --end", path="range")
 
     v4_root = getattr(args, "from_v4", None)
-    if v4_root:
+    from_vision = bool(getattr(args, "from_binance_vision", False))
+    if from_vision:
+        from upstream import binance_vision
+
+        if start is None or end is None:
+            raise FlowError(
+                E1004, "从备份站下载必须给 --start 与 --end", path="range",
+                hint="区间决定抓哪些月份；备份站按 YYYY-MM 归档，不给区间等于抓全部",
+            )
+        reports = binance_vision.download_vision(
+            data_root, datasets,
+            exchange=exchange, market=market, symbols=symbols, timeframe=timeframe,
+            start=start, end=end, proxy=getattr(args, "proxy", None),
+            revise=bool(getattr(args, "revise", False)),
+        )
+    elif v4_root:
         reports = fetcher.import_v4(
             data_root, v4_root, datasets,
             exchange=exchange, market=market, symbols=symbols, timeframe=timeframe,

@@ -34,7 +34,7 @@ CORE_COMMANDS: tuple[str, ...] = ("run", "station", "explain", "inspect", "stati
 BUSINESS_COMMANDS: tuple[str, ...] = (
     "doctor", "estimate", "fetch", "pipeline", "factors", "backtest",
     "evaluate", "promote", "factor_db", "holdout", "certify", "reconcile",
-    "snapshot", "replay",
+    "snapshot", "replay", "vision",
 )
 ALL_COMMANDS: tuple[str, ...] = CORE_COMMANDS + BUSINESS_COMMANDS
 # experiment 是 run 的旧名，保留一个版本用于迁移（09 §2.2）
@@ -84,7 +84,8 @@ def _specs() -> dict[str, CommandSpec]:
         ("fetch", frozenset({WRITES_SUPPLY}), False, 4,
          ("exchange", "market", "data_root", "datasets"),
          ("datasets", "symbols", "symbol-set", "start", "end", "timeframe",
-          "exchange", "market", "from-v4", "revise", "limit", "spot-exchange"), True),
+          "exchange", "market", "from-v4", "from-binance-vision", "proxy",
+          "revise", "limit", "spot-exchange"), True),
         ("run", frozenset({WRITES_FACTS}), True, 4,
          ("station_specs", "fingerprints", "origins_count", "parcels", "traces", "state"),
          ("plan", "set", "no_strict", "allow_constitutive_override"), True),
@@ -126,6 +127,13 @@ def _specs() -> dict[str, CommandSpec]:
          ("enqueued", "count", "replay_id", "status", "decision", "report"),
          ("enqueue", "run", "show", "replay_id", "snapshot", "all_active",
           "factor"), True),
+        # 全市场日 K 发现/筛选/拉齐：list 只读；scan 写候选清单（facts）；
+        # fetch 写供给（parquet）。均不写全局账本，无需 --yes。
+        ("vision", frozenset({WRITES_FACTS, WRITES_SUPPLY}), False, 4,
+         ("action", "count", "eligible", "rejected", "scanned", "symbols", "datasets"),
+         ("vision_action", "list", "scan", "fetch", "refresh", "scan_start",
+          "scan_end", "min_days", "write_symbol_set", "datasets", "exchange",
+          "market", "timeframe", "proxy", "timeout", "workers", "revise"), True),
     ]
     return {r[0]: CommandSpec(*r) for r in rows}
 

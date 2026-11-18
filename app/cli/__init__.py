@@ -41,6 +41,7 @@ from .run import cmd_run
 from .snapshot import cmd_snapshot
 from .station import cmd_station
 from .stations import cmd_stations
+from .vision import cmd_vision
 
 _DISPATCH: dict[str, Callable[[Any], dict[str, Any]]] = {
     "run": cmd_run, "explain": cmd_explain,
@@ -51,6 +52,7 @@ _DISPATCH: dict[str, Callable[[Any], dict[str, Any]]] = {
     "reconcile": cmd_reconcile,
     "evaluate": cmd_evaluate, "backtest": cmd_backtest, "certify": cmd_certify,
     "snapshot": cmd_snapshot, "replay": cmd_replay,
+    "vision": cmd_vision,
 }
 
 # 已声明但还没有入口的命令：给出一条能指路的拒绝，而不是让 KeyError 变成
@@ -195,6 +197,32 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("replay_id")
     sh.add_argument("--format", choices=FORMATS, default="json")
 
+    sp = sub.add_parser("vision", help="全市场日 K 发现 → 筛选 → 拉齐到挖掘空间")
+    vsub = sp.add_subparsers(dest="vision_action", required=True)
+    vl = vsub.add_parser("list", help="ccxt 列全市场 USDT-M 永续清单")
+    vl.add_argument("--proxy", help="代理（如 http://127.0.0.1:7890）")
+    vl.add_argument("--format", choices=FORMATS, default="json")
+    vs = vsub.add_parser("scan", help="探测每标的备份站最早月份并按历史长度筛选")
+    vs.add_argument("--scan-start", default="2019-01", help="起始探测月 YYYY-MM")
+    vs.add_argument("--scan-end", help="结束探测月 YYYY-MM（缺省当前月）")
+    vs.add_argument("--min-days", type=int, default=720, help="最少历史天数（默认 720）")
+    vs.add_argument("--write-symbol-set", help="把筛中标的写入 symbol_sets.json 的集合名")
+    vs.add_argument("--refresh", action="store_true", help="强制重新拉全市场清单")
+    vs.add_argument("--proxy", help="代理（如 http://127.0.0.1:7890）")
+    vs.add_argument("--timeout", type=float, default=20, help="HEAD 探测超时秒数")
+    vs.add_argument("--workers", type=int, default=8, help="并发探测线程数（默认 8）")
+    vs.add_argument("--format", choices=FORMATS, default="json")
+    vf = vsub.add_parser("fetch", help="按筛中清单从备份站下载 ohlcv/funding")
+    vf.add_argument("--min-days", type=int, default=720, help="只下载历史≥此天数的标的")
+    vf.add_argument("--datasets", default="ohlcv,funding", help="逗号分隔（仅 ohlcv/funding）")
+    vf.add_argument("--exchange", default="binanceusdm")
+    vf.add_argument("--market", default="futures", choices=("futures", "spot"))
+    vf.add_argument("--timeframe", default="1d")
+    vf.add_argument("--proxy", help="代理（如 http://127.0.0.1:7890）")
+    vf.add_argument("--workers", type=int, default=8, help="并发下载线程数（默认 8）")
+    vf.add_argument("--revise", action="store_true", help="覆盖已写历史")
+    vf.add_argument("--format", choices=FORMATS, default="json")
+
     sp = sub.add_parser("stations", help="八工位清单（顺序与规格自省）")
     sp.add_argument("--format", choices=FORMATS, default="json")
 
@@ -212,8 +240,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--timeframe", default="1d", help="只对 ohlcv 生效")
     sp.add_argument("--start", help="RFC3339；从交易所采集时必填")
     sp.add_argument("--end", help="RFC3339；从交易所采集时必填")
-    sp.add_argument("--from-v4",
-                    help="从 V4 feather 快照导入（如 data/binance）")
+    src = sp.add_mutually_exclusive_group()
+    src.add_argument("--from-v4",
+                     help="从 V4 feather 快照导入（如 data/binance）")
+    src.add_argument("--from-binance-vision", action="store_true",
+                     help="从币安公开数据备份站 data.binance.vision 下载月度归档"
+                          "（仅 ohlcv/funding；带 sha256 校验）")
+    sp.add_argument("--proxy", help="下载代理（如 http://127.0.0.1:7890）；"
+                                    "binance-vision 来源用，缺省读环境 https_proxy")
     sp.add_argument("--revise", action="store_true",
                     help="覆盖已写历史（默认 append-only，冲突只计数）")
     sp.add_argument("--limit", type=int, default=1000, help="每页根数")

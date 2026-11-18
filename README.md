@@ -184,6 +184,39 @@ python -m app.cli fetch \
 {"dataset": "funding", "symbols": 2, "rows_added": 8480, "revised": 0, "skipped": []}
 ```
 
+### 1.3.1 从币安备份站下载 + 扩大可用币种（`vision`）
+
+交易所逐标的翻页慢，且新币没有多年历史。**备份站 `<https://data.binance.vision>`** 是币安官方按月归档，
+`ohlcv` / `funding` 可回溯到 2019/2020 年，一次一个 zip 就是一整月。它和交易所来源落到**同一份 parquet**，
+读取侧无需区分。每个 zip 带 `.CHECKSUM`（sha256），下载后强制校验，不符即拒收。
+
+`vision` 把「发现全市场 → 按历史长度筛选 → 拉齐数据」固化成三步：
+
+```bash
+python -m app.cli vision list   --proxy http://127.0.0.1:7890
+python -m app.cli vision scan   --min-days 1200 --write-symbol-set pit_all \
+                                --proxy http://127.0.0.1:7890
+python -m app.cli vision fetch  --min-days 1200 --proxy http://127.0.0.1:7890
+```
+
+- `list`：ccxt 拉全市场 USDT-M 永续清单（约 900 个），缓存到 `schemas/all_perps.json`。
+- `scan`：对每个标的用二分探测备份站**最早有归档的月份**（归档月份单调，二分把请求数从
+  8 万降到约 6 千），算出可用天数，按 `--min-days` 筛选；产出 `schemas/vision_candidates.json`
+  （含每标的 `first_month` / `days` / 筛选条件，可复算），`--write-symbol-set` 同时写标的集供 plan 引用。
+- `fetch`：从筛中清单按最早 `first_month` 起下载 `ohlcv` + `funding` 到挖掘数据根。
+
+也可以对已知标的直接用 `fetch --from-binance-vision`（与 `--from-v4` 互斥）：
+
+```bash
+python -m app.cli fetch --datasets ohlcv,funding --symbols "BTC/USDT:USDT,ETH/USDT:USDT" \
+  --exchange binanceusdm --start 2020-01-01 --end 2026-11-01 \
+  --from-binance-vision --proxy http://127.0.0.1:7890
+```
+
+注意：**备份站无 `open_interest` 月度历史**（交易所只留约 30 天），`basis` 需 perp/spot 同日对齐，
+两者仍走交易所来源。`vision scan` 筛出的老币标的集可直接填进 plan 的 `supply.symbols`，
+再用已有的 `pit_dynamic_topk` 边界逐时点选流动性 top-k——晚上市标的在上市前的格子天然缺失，不会污染面板。
+
 ## 1.4 增量同步（每日）
 
 **append-only**：同一 `(symbol, timestamp)` 的旧值永不覆盖，冲突只计数进 `revised`。所以「再采一次」天然就是增量同步，不需要删旧文件、不需要算断点。
@@ -600,7 +633,8 @@ python -m app.cli estimate --plan my_plan.json --turnover 1.0
 
 | 命令 | mutation | 用途 | 关键参数 |
 |---|---|---|---|
-| `fetch` | 写供给 | 四数据集采集 | `--datasets` `--symbol-set`/`--symbols` `--exchange` `--market` `--timeframe` `--start` `--end` `--revise` `--limit` `--spot-exchange` |
+| `fetch` | 写供给 | 四数据集采集 | `--datasets` `--symbol-set`/`--symbols` `--exchange` `--market` `--timeframe` `--start` `--end` `--from-v4`/`--from-binance-vision` `--proxy` `--revise` `--limit` `--spot-exchange` |
+| `vision` | 写供给 | 全市场日 K 发现→筛选→拉齐 | 子命令 `list`/`scan`/`fetch`；`--min-days` `--write-symbol-set` `--datasets` `--proxy` |
 | `doctor` | 只读 | 供给体检 | `--plan` `--dataset` |
 | `estimate` | 只读 | 成本估算 | `--plan` `--turnover` |
 | `explain` | 只读 | 编译来源与指纹 | `--plan` `--set` `--no-strict` `--allow-constitutive-override` |
