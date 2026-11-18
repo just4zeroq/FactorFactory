@@ -344,9 +344,16 @@ def _event_field_grid(
             outside += 1
             continue
         col_vals = values[:, j] if values.ndim == 2 else values
-        order = np.argsort(ev_times, kind="stable")
-        ev_t = ev_times[order]
-        ev_v = col_vals[order]
+        # 只用「本标的自己有观测」的事件时刻做 as-of。event_stream 的 times 是
+        # 全标的事件时间并集，col_vals 在别的标的的时刻上是 NaN；若拿全局并集
+        # searchsorted，bar 时刻常落在「属于别的标的」的事件上 → 取到 NaN，
+        # 事件流字段会随标的事件相位的偶然重合而大面积缺失（OOS 段尤甚）。
+        own = np.isfinite(col_vals)
+        ev_t = ev_times[own]
+        ev_v = col_vals[own]
+        order = np.argsort(ev_t, kind="stable")
+        ev_t = ev_t[order]
+        ev_v = ev_v[order]
         if ev_t.size == 0:
             continue
         idx = np.searchsorted(ev_t, times, side="right") - 1

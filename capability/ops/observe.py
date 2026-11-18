@@ -234,9 +234,18 @@ def _longshort(values: np.ndarray, valid: np.ndarray, label_raw: np.ndarray,
         raise FlowError(E1004, f"prefilter.quantile 必须在 (0, 0.5]，得到 {q}",
                         path="observe.params.prefilter.quantile")
     k = max(1, int(n_sym * q + 1e-12))
+    # 调仓网格的相位对齐到「第一行有可交易标签」的位置。
+    # 为什么不能直接用 t % period：overlap_policy=independent_sample 时标签只在
+    # 第一个可用行之后每 horizon 行采一次（如 2,7,12…），如果它恰好与绝对网格
+    # 0,5,10… 错开，网格行永远落在无标签的行上 → idx.size<2 → 权重恒为 0，
+    # 于是 gross_return / sr / 多空序列全零，DSR 与成本闸被「假零」卡死。
+    # 首个有效行作锚点后，采样行与网格行重合；label_valid 全 True 时锚点为 0，
+    # 退化为原来的 t % period 语义（allocate 的冻结网格不受影响）。
+    rows_with_label = np.flatnonzero(mask.any(axis=1))
+    anchor = int(rows_with_label[0]) if rows_with_label.size else 0
     for t in range(t_len):
         # 再平衡网格：非网格行持仓不动（与 allocate.rebalance_freeze 同一语义）。
-        if period > 1 and t % period:
+        if period > 1 and (t - anchor) % period:
             weights[t] = weights[t - 1] if t else 0.0
             continue
         row = values[t]

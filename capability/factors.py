@@ -71,6 +71,91 @@ BUILTIN_FACTORS: dict[str, dict[str, Any]] = {
     # 资金费是持有成本：多头在正资金费下净收益为负，故取相反数
     "funding_carry": _op("mul", _const(-1),
                          _op("mean", _field("funding_rate"), _const(7))),
+    # 更长窗口的资金费carry：7 个 funding 事件约 2.3 天，2026Q2 的短窗口 IC
+    # 衰减到 0；14/21 个事件覆盖 5~7 天，与 5 日前瞻收益的持有期更匹配，
+    # 且在 2024H2/2025H1/2025H2/2026Q1/Q2/Q3Q4 分段 IC 上保持同号。
+    "funding_carry14": _op("mul", _const(-1),
+                           _op("mean", _field("funding_rate"), _const(14))),
+    "funding_carry21": _op("mul", _const(-1),
+                           _op("mean", _field("funding_rate"), _const(21))),
+    # 低波动异象：截面 IC 为负说明高波动标的后续收益更差；取负号作为因子。
+    # 它不依赖资金费数据，可作为独立的经济学锚点，也是 funding 失效时的对照。
+    "low_vol20": _op("mul", _const(-1),
+                     _op("std", _ret("close", 1), _const(20))),
+    "low_vol60": _op("mul", _const(-1),
+                     _op("std", _ret("close", 1), _const(60))),
+    # 资金费carry + 低波动：两项各自截面标准化后等权，降低单一信号失效风险。
+    "funding_lowvol14": _op(
+        "add",
+        _op("scale", _op("mul", _const(-1),
+                         _op("mean", _field("funding_rate"), _const(14)))),
+        _op("scale", _op("mul", _const(-1),
+                         _op("std", _ret("close", 1), _const(20)))),
+    ),
+    # 资金费的截面秩版本：抑制极端 funding 事件对分位组合的影响。
+    "funding_carry_rank7": _op(
+        "rank",
+        _op("mul", _const(-1), _op("mean", _field("funding_rate"), _const(7))),
+    ),
+    # 组合锚点：7 事件资金费carry 是主收益来源；量能比在 2026Q2/Q3Q4 的截面 IC
+    # 为正，基差水平在 2026Q1/Q2 为正。两项各自截面标准化后与资金费等权，
+    # 用不同经济学来源对冲单一 carry 的时段失效。
+    "funding_volratio": _op(
+        "add",
+        _op("scale", _op("mul", _const(-1),
+                         _op("mean", _field("funding_rate"), _const(7)))),
+        _op("scale", _op("div", _field("volume"),
+                         _op("mean", _field("volume"), _const(20)))),
+    ),
+    # 长窗口版本：Q3/Q4 原始截面 IC 上 14/21 事件资金费强于 7 事件。
+    "funding_volratio14": _op(
+        "add",
+        _op("scale", _op("mul", _const(-1),
+                         _op("mean", _field("funding_rate"), _const(14)))),
+        _op("scale", _op("div", _field("volume"),
+                         _op("mean", _field("volume"), _const(20)))),
+    ),
+    "funding_volratio21": _op(
+        "add",
+        _op("scale", _op("mul", _const(-1),
+                         _op("mean", _field("funding_rate"), _const(21)))),
+        _op("scale", _op("div", _field("volume"),
+                         _op("mean", _field("volume"), _const(20)))),
+    ),
+    # 交互项：负资金费只有在成交活跃时才更容易被纠正。原始截面 IC 在
+    # 2024H2/2025H1/2025H2/2026Q1/Q2/Q3Q4 六段全部同号，优于加法组合。
+    "funding_vol_interaction": _op(
+        "mul",
+        _op("mul", _const(-1), _op("mean", _field("funding_rate"), _const(7))),
+        _op("div", _field("volume"), _op("mean", _field("volume"), _const(20))),
+    ),
+    "funding14_vol_interaction": _op(
+        "mul",
+        _op("mul", _const(-1), _op("mean", _field("funding_rate"), _const(14))),
+        _op("div", _field("volume"), _op("mean", _field("volume"), _const(20))),
+    ),
+    "funding14_vol_interaction_scaled": _op(
+        "mul",
+        _op("scale", _op("mul", _const(-1),
+                         _op("mean", _field("funding_rate"), _const(14)))),
+        _op("scale", _op("div", _field("volume"),
+                         _op("mean", _field("volume"), _const(20)))),
+    ),
+    "funding_basis7": _op(
+        "add",
+        _op("scale", _op("mul", _const(-1),
+                         _op("mean", _field("funding_rate"), _const(7)))),
+        _op("scale", _op("mean", _field("basis"), _const(7))),
+    ),
+    "funding_volratio_basis": _op(
+        "add",
+        _op("scale", _op("mul", _const(-1),
+                         _op("mean", _field("funding_rate"), _const(7)))),
+        _op("add",
+            _op("scale", _op("div", _field("volume"),
+                             _op("mean", _field("volume"), _const(20)))),
+            _op("scale", _op("mean", _field("basis"), _const(7)))),
+    ),
     # 持仓量变化
     "oi_change20": _ret("open_interest", 20),
     # 基差（perp 相对现货溢价）的近期均值
