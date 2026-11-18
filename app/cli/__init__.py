@@ -36,7 +36,9 @@ from .pipeline import cmd_pipeline
 from .promote import cmd_promote
 from .reconcile import cmd_reconcile
 from .replay import cmd_backtest, cmd_certify, cmd_evaluate
+from .replay_ops import cmd_replay
 from .run import cmd_run
+from .snapshot import cmd_snapshot
 from .station import cmd_station
 from .stations import cmd_stations
 
@@ -48,6 +50,7 @@ _DISPATCH: dict[str, Callable[[Any], dict[str, Any]]] = {
     "holdout": cmd_holdout, "factor_db": cmd_factor_db,
     "reconcile": cmd_reconcile,
     "evaluate": cmd_evaluate, "backtest": cmd_backtest, "certify": cmd_certify,
+    "snapshot": cmd_snapshot, "replay": cmd_replay,
 }
 
 # 已声明但还没有入口的命令：给出一条能指路的拒绝，而不是让 KeyError 变成
@@ -150,6 +153,47 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("reconcile", help="登记库/产物链/对象存储三方一致性核对")
     sp.add_argument("--format", choices=FORMATS, default="json")
+
+    sp = sub.add_parser("snapshot", help="数据快照管理（create/list/show/archive）")
+    subs = sp.add_subparsers(dest="snapshot_action", required=True)
+    c = subs.add_parser("create", help="从当前供给冻结一个快照")
+    c.add_argument("--datasets", required=True, help="逗号分隔，如 ohlcv,funding")
+    c.add_argument("--exchange", required=True)
+    c.add_argument("--market", default="futures", choices=("futures", "spot"))
+    c.add_argument("--symbols", help="逗号分隔；缺省扫描目录全部标的")
+    c.add_argument("--timeframe", default="1d")
+    c.add_argument("--parent", help="父快照 id")
+    c.add_argument("--note", default="")
+    c.add_argument("--no-enqueue", action="store_true",
+                   help="只建清单，不自动把 active 因子排入复盘队列")
+    c.add_argument("--format", choices=FORMATS, default="json")
+    l = subs.add_parser("list", help="列出快照")
+    l.add_argument("--status", choices=("active", "archived"))
+    l.add_argument("--limit", type=int)
+    l.add_argument("--format", choices=FORMATS, default="json")
+    sh = subs.add_parser("show", help="查看完整清单")
+    sh.add_argument("snapshot_id")
+    sh.add_argument("--format", choices=FORMATS, default="json")
+    a = subs.add_parser("archive", help="归档快照（新计划不可再引用）")
+    a.add_argument("snapshot_id")
+    a.add_argument("--yes", action="store_true")
+    a.add_argument("--format", choices=FORMATS, default="json")
+
+    sp = sub.add_parser("replay", help="因子在新快照上的复盘闭环")
+    subs = sp.add_subparsers(dest="replay_action", required=True)
+    e = subs.add_parser("enqueue", help="把待复验因子入队（幂等）")
+    e.add_argument("--snapshot", help="目标快照 id；缺省最新 active")
+    e.add_argument("--all-active", action="store_true",
+                   help="全部 active 因子，而不只是新快照之后未认证的")
+    e.add_argument("--factor", action="append", default=[],
+                   help="收窄到指定 factor_id（可重复）")
+    e.add_argument("--format", choices=FORMATS, default="json")
+    r = subs.add_parser("run", help="执行一条复盘（写证书 + 报告）")
+    r.add_argument("replay_id")
+    r.add_argument("--format", choices=FORMATS, default="json")
+    sh = subs.add_parser("show", help="查看复盘状态与报告")
+    sh.add_argument("replay_id")
+    sh.add_argument("--format", choices=FORMATS, default="json")
 
     sp = sub.add_parser("stations", help="八工位清单（顺序与规格自省）")
     sp.add_argument("--format", choices=FORMATS, default="json")

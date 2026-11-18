@@ -37,7 +37,9 @@ from storage.layout import Layout
 from app.contract import require_confirmation
 from capability.params import implementation_defaults
 
-from .common import build_supply_context, envelope_ok, load_json_dict
+from .common import (
+    build_supply_context, envelope_ok, load_json_dict, load_snapshot_for_ticket,
+)
 from .live import build_live_supply
 from .station import _frozen
 
@@ -53,6 +55,12 @@ class _Replay:
         self.layout = Layout(resolve_data_root())
         self.writer = TicketWriter(self.layout, ticket_id)
         self.plan, self.ctx = _frozen(self.writer, ticket_id)
+        # 关键：重建必须用 run 当时绑定的快照，而不是「当前目录里有什么」。
+        # 补采历史后目录变了，若重新扫描就会算出另一份 Boundary，E3002 正是
+        # 这条链上被抓出来的。清单里的字节被改写则 fail-closed，不静默重算。
+        self.snapshot_id, self.snapshot_manifest = load_snapshot_for_ticket(
+            self.ctx, self.layout.root,
+        )
         self.master_seed = int((self.plan.get("search") or {}).get("seed")
                                or implementation_defaults("cli")["master_seed"])
         sink = StructlogLogSink(self.layout.log_dir(ticket_id) / "process.jsonl")
@@ -80,6 +88,7 @@ class _Replay:
                                          label="标的集表")
             _pins, _sets, _meta, supply_datasets = build_supply_context(
                 self.plan, symbol_sets, resolve_data_root(),
+                manifest=self.snapshot_manifest,
             )
             self.kwargs.update(
                 use_capabilities=True,

@@ -19,11 +19,11 @@ from contracts.errors import E1004, E1020, FlowError
 
 
 # ---------------------------------------------------------------- 命令面
-def test_17_commands_declared():
-    # S6 新增 reconcile（登记/产物链/对象三方核对），业务命令 11 -> 12
+def test_19_commands_declared():
+    # S6 新增 reconcile（17）；快照管理新增 snapshot（18）；复盘闭环 replay（19）
     assert len(C.CORE_COMMANDS) == 5
-    assert len(C.BUSINESS_COMMANDS) == 12
-    assert len(C.ALL_COMMANDS) == 17
+    assert len(C.BUSINESS_COMMANDS) == 14
+    assert len(C.ALL_COMMANDS) == 19
     assert set(C.COMMANDS) == set(C.ALL_COMMANDS)
 
 

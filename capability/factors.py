@@ -160,6 +160,35 @@ BUILTIN_FACTORS: dict[str, dict[str, Any]] = {
     "oi_change20": _ret("open_interest", 20),
     # 基差（perp 相对现货溢价）的近期均值
     "basis_carry": _op("mean", _field("basis"), _const(7)),
+    # --- S8 新增锚点（top200 挖掘）-------------------------------------
+    # carry 的变化率比水平更贴近 5 日前瞻：基差/资金费的收敛速度反映套利压力。
+    "funding_delta": _op("delta", _op("mean", _field("funding_rate"), _const(14)), _const(3)),
+    "basis_delta": _op("delta", _op("mean", _field("basis"), _const(14)), _const(3)),
+    # Amihud 非流动性：|收益|/成交额，低流动性溢价；取负号作因子。
+    "illiquidity": _op(
+        "mul", _const(-1),
+        _op("div",
+            _op("abs", _ret("close", 1)),
+            _op("mean", _field("volume"), _const(20))),
+    ),
+    # 区间效率：(high-low)/close 与已实现波动的比值——信息含量高的波动更易延续。
+    "range_efficiency": _op(
+        "div",
+        _op("div", _op("sub", _field("high"), _field("low")), _field("close")),
+        _op("std", _ret("close", 1), _const(20)),
+    ),
+    # 时序动量（跳过最近一周，12-1 经典构造），规避短期反转污染。
+    "tsmom_60_5": _op(
+        "div",
+        _op("sub", _op("ref", _field("close"), _const(5)),
+            _op("ref", _field("close"), _const(60))),
+        _op("ref", _field("close"), _const(60)),
+    ),
+    # 量价背离：上涨缩量（价涨量缩）常预示反转；取 volume 与 ret 的负相关。
+    "vol_price_diverge": _op(
+        "mul", _const(-1),
+        _op("corr", _field("volume"), _ret("close", 1), _const(20)),
+    ),
 }
 
 # 每个因子在语义上的最低数据集要求：只有 futures 才提供这两类数据。

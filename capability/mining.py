@@ -554,6 +554,125 @@ def generate_random(
     return cands, state
 
 
+def _op(name: str, *args: Any) -> dict[str, Any]:
+    """构造 AST 算子节点（模板枚举算法用）。"""
+    return {"op": name, "args": list(args)}
+
+
+def _fld(name: str) -> dict[str, Any]:
+    return {"field": name}
+
+
+def _cn(value: int | float) -> dict[str, Any]:
+    return {"const": value}
+
+
+def _template_ret(name: str, window: int) -> dict[str, Any]:
+    d = _op("ref", _fld(name), _cn(window))
+    return _op("div", _op("sub", _fld(name), d), d)
+
+
+def _build_templates(fields: frozenset[str], windows: Sequence[int]):
+    """(模板名, 窗口) → AST。只产出字段在 `fields` 内的模板。
+
+    每个模板都是经济学上有动机的锚点（动量/反转/波动/量能/carry/基差/持仓），
+    在窗口网格上枚举。这与 random_expression 的均匀采样互补：模板命中率远高于
+    随机，先验命中后再由 GP 在同一空间做交叉变异。
+    """
+    out: list[tuple[str, int, dict[str, Any]]] = []
+    for w in windows:
+        if "close" in fields:
+            out.append(("mom", w, _template_ret("close", w)))
+            out.append(("rev", w, _op("mul", _cn(-1), _template_ret("close", w))))
+        if "close" in fields and "vwap" in fields:
+            out.append(("vwap_gap", w, _op("div",
+                       _op("sub", _fld("close"), _fld("vwap")), _fld("vwap"))))
+        if "high" in fields and "low" in fields and "close" in fields:
+            out.append(("hl_range", w, _op("div",
+                       _op("sub", _fld("high"), _fld("low")),
+                       _op("mean", _fld("close"), _cn(w)))))
+        if "volume" in fields:
+            out.append(("vol_ratio", w, _op("div", _fld("volume"),
+                       _op("mean", _fld("volume"), _cn(w)))))
+        if "funding_rate" in fields:
+            out.append(("funding_carry", w, _op("mul", _cn(-1),
+                       _op("mean", _fld("funding_rate"), _cn(w)))))
+        if "basis" in fields:
+            out.append(("basis_carry", w, _op("mean", _fld("basis"), _cn(w))))
+        if "open_interest" in fields:
+            out.append(("oi_change", w, _template_ret("open_interest", w)))
+        # 交互：负 funding × 量能比（仅在两字段都在时用 w 作为量能窗口）
+        if "funding_rate" in fields and "volume" in fields:
+            out.append(("funding_vol", w, _op(
+                "mul",
+                _op("mul", _cn(-1), _op("mean", _fld("funding_rate"), _cn(w))),
+                _op("div", _fld("volume"), _op("mean", _fld("volume"), _cn(20))),
+            )))
+    return out
+
+
+def generate_template_enum(
+    *, cfg: GPConfig, fields: Sequence[str], seed: int,
+    available_from: str = "",
+    windows: Sequence[int] | None = None,
+    templates: Sequence[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """模板枚举（`template_enum`）：确定性枚举经济锚点 × 窗口网格。
+
+    无 fitness、无随机：每个 (模板, 窗口) 生成一个候选，按 candidate_id 去重。
+    `windows` 默认 [5,10,20,40,60,120]；`templates` 可筛选模板名前缀。
+    `max_candidates` 截断（按窗口顺序，稳定）。
+    """
+    reg = default_registry()
+    _ = reg  # 模板固定使用已注册算子/字段，normalise_ast 会再校验一次
+    have = frozenset(str(f) for f in fields)
+    wins = [int(w) for w in (windows or [5, 10, 20, 40, 60, 120])]
+    wins = [w for w in wins if 1 <= w <= 512]
+    tpl_filter = {str(t) for t in templates} if templates else None
+    pool = _build_templates(have, wins)
+    if tpl_filter:
+        pool = [(n, w, ast) for n, w, ast in pool if n in tpl_filter]
+    cands: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for name, win, ast in pool:
+        cand = make_candidate(
+            ast, generator=f"template_enum:{name}@1", seed=seed,
+            available_from=available_from,
+            params_snapshot={"template": name, "window": win, "windows": wins},
+        )
+        if cand["candidate_id"] in seen:
+            continue
+        seen.add(cand["candidate_id"])
+        cands.append(cand)
+    target = int(cfg.max_candidates)
+    if target and len(cands) > target:
+        cands = cands[:target]
+    state = {
+        "algorithm": "template_enum", "version": "1", "seed": seed,
+        "fields": list(fields), "windows": wins,
+        "templates": sorted({n for n, _, _ in pool}),
+        "target": target, "emitted": len(cands),
+    }
+    return cands, state
+
+
+def describe_template_enum() -> AlgorithmSpec:
+    return AlgorithmSpec(
+        name="template_enum", version="1", deterministic=True, needs_seed=True,
+        stateful=False, needs_fitness=False,
+        fitness_objectives=(),
+        fit_window="mine_only",
+        output_kind="expression",
+        max_candidates=40,
+        budget_group="inherit",
+        param_schema={
+            "max_candidates": {"type": "int", "min": 1},
+            "windows": {"type": "list", "item": {"type": "int", "min": 1, "max": 512}},
+            "templates": {"type": "list", "item": {"type": "str"}},
+        },
+    )
+
+
 def describe_random() -> AlgorithmSpec:
     return AlgorithmSpec(
         name="random_expression", version="1", deterministic=True, needs_seed=True,

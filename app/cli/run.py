@@ -15,7 +15,7 @@ from storage.ledger import Ledger
 
 from .common import (
     build_supply_context, envelope_ok, load_json_dict, load_plan, new_ticket_id,
-    parse_overrides,
+    parse_overrides, resolve_snapshot_for_plan,
 )
 from .live import build_live_supply, expand_station_inputs
 
@@ -60,8 +60,13 @@ def cmd_run(args: Any) -> dict[str, Any]:
 
     # 供给身份现算：没有别名表可读，路径即约定、内容即版本（19-supply.md）。
     symbol_sets = load_json_dict(layout.symbol_sets, code=E1004, label="标的集表")
+    # 快照先于供给读取解析：一旦声明了 snapshot 且当前文件已变，必须在任何
+    # 工位执行前 fail-closed，否则会把新数据算进旧实验（E2005）。
+    resolved_snapshot_id, snapshot_manifest = resolve_snapshot_for_plan(
+        plan, resolve_data_root(), auto_create=True,
+    )
     aliases, symbol_sets, supply_meta, supply_datasets = build_supply_context(
-        plan, symbol_sets, resolve_data_root(),
+        plan, symbol_sets, resolve_data_root(), manifest=snapshot_manifest,
     )
 
     compiled = compile_plan(
@@ -141,6 +146,8 @@ def cmd_run(args: Any) -> dict[str, Any]:
             "ticket_id": ticket_id,
             "plan": compiled.plan,
             "fingerprints": compiled.fingerprints,
+            "resolved_snapshot_id": resolved_snapshot_id,
+            "snapshot_manifest_digest": (snapshot_manifest or {}).get("manifest_digest"),
             "live": live,
             "master_seed": master_seed,
             "seed_scope": kwargs["seed_scope"],
@@ -175,6 +182,7 @@ def cmd_run(args: Any) -> dict[str, Any]:
         "skipped_at": result.skipped_at,
         "stage": "S7-live-capability" if live else "S2-real-supply",
         "live": live,
+        "resolved_snapshot_id": resolved_snapshot_id,
         # 读进来的数据集（含未接入成本模型的辅助数据集）；「已采集」不等于「已使用」。
         "supply_datasets": sorted(supply_datasets),
     })

@@ -441,3 +441,65 @@ def test_facade_rejects_multi_algorithm_params():
             assert exc.error.code == E1004, fn.__name__
         else:
             raise AssertionError(f"{fn.__name__} 未拒绝多算法参数")
+
+
+def test_template_enum_algorithm():
+    """template_enum：确定性经济锚点 × 窗口网格，注册/分派/字段门控一致。"""
+    from capability.mining import GPConfig, generate_template_enum
+    from capability.ops import search as s
+
+    specs = s.describe()
+    assert "template_enum" in specs
+    assert specs["template_enum"]["needs_fitness"] is False
+    assert specs["template_enum"]["deterministic"] is True
+    assert set(s._algorithms()) == set(s._RUNNERS)
+
+    fields = ("close", "funding_rate", "volume", "basis")
+    cfg = GPConfig(fields=fields, max_candidates=100)
+    cands, state = generate_template_enum(cfg=cfg, fields=fields, seed=7)
+    assert len(cands) >= 20
+    assert state["algorithm"] == "template_enum"
+    names = {c["generator"] for c in cands}
+    assert any("mom" in n for n in names)
+    assert any("funding_carry" in n for n in names)
+    # 无 funding 字段时不得产出 funding 模板
+    c2, _ = generate_template_enum(
+        cfg=GPConfig(fields=("close",), max_candidates=100),
+        fields=("close",), seed=7,
+    )
+    assert all("funding" not in c["generator"] for c in c2)
+    assert all("basis" not in c["generator"] for c in c2)
+    # 确定性：同参数逐位一致（与 seed 无关）
+    c3, _ = generate_template_enum(cfg=cfg, fields=fields, seed=999)
+    assert [c["candidate_id"] for c in cands] == [c["candidate_id"] for c in c3]
+
+
+def test_template_enum_algorithm():
+    """template_enum：确定性经济锚点 × 窗口网格，注册/分派/字段门控一致。"""
+    from capability.mining import GPConfig, generate_template_enum
+    from capability.ops import search as s
+
+    specs = s.describe()
+    assert "template_enum" in specs
+    assert specs["template_enum"]["needs_fitness"] is False
+    assert specs["template_enum"]["deterministic"] is True
+    assert set(s._algorithms()) == set(s._RUNNERS)
+
+    fields = ("close", "funding_rate", "volume", "basis")
+    cfg = GPConfig(fields=fields, max_candidates=100)
+    cands, state = generate_template_enum(cfg=cfg, fields=fields, seed=7)
+    assert len(cands) >= 20
+    assert state["algorithm"] == "template_enum"
+    names = {c["generator"] for c in cands}
+    assert any("mom" in n for n in names)
+    assert any("funding_carry" in n for n in names)
+    # 无 funding 字段时不得产出 funding 模板
+    c2, _ = generate_template_enum(
+        cfg=GPConfig(fields=("close",), max_candidates=100),
+        fields=("close",), seed=7,
+    )
+    assert all("funding" not in c["generator"] for c in c2)
+    assert all("basis" not in c["generator"] for c in c2)
+    # 确定性：同参数逐位一致（与 seed 无关）
+    c3, _ = generate_template_enum(cfg=cfg, fields=fields, seed=999)
+    assert [c["candidate_id"] for c in cands] == [c["candidate_id"] for c in c3]

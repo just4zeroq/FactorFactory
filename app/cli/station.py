@@ -26,21 +26,31 @@ from storage.layout import Layout
 from upstream import store
 from capability.params import implementation_defaults
 
-from .common import build_supply_context, envelope_ok, load_json_dict
+from .common import (
+    build_supply_context, envelope_ok, load_json_dict, load_snapshot_for_ticket,
+)
 from .live import build_live_supply
 
 
-def _supply_staleness(plan: dict, ctx: dict, root) -> dict[str, Any]:
-    """对比冻结时的供给 checksum 与当前磁盘：变了就是 stale。
+def _supply_staleness(plan: dict, ctx: dict, root, manifest=None) -> dict[str, Any]:
+    """对比冻结时的供给身份与当前磁盘：变了就是 stale。
 
     为什么必须在单步前查：单步没有 `--plan`，它的合法性完全来自「和 run 时
     同一份输入」。数据被重新采集过（`flow fetch` 又跑了一次、或换了标的集），
     单步仍会算出一份看似正常的产物，而它与 ticket 里的结论不同源——这是
     「单步重放」最容易骗过自己的地方。
 
-    老 ticket 没有 `supply_pins`（本轮之前生成的），显式标 `legacy_ticket`，
-    不假装检查过。
+    绑定快照的 ticket 走另一套判据：只要清单字节仍能对上，就算目录里多了
+    新采集的文件也不算 stale（那些文件对这张 ticket 根本不可见）。清单被
+    改写则由 `load_snapshot_for_ticket` 提前抛错，不在这里吞成警告。
+
+    老 ticket 没有 `resolved_snapshot_id`（本轮之前生成的），显式标
+    `legacy_ticket`，按旧的 checksum 比对；也不假装它绑定了快照。
     """
+    snapshot_id = ctx.get("resolved_snapshot_id")
+    if snapshot_id:
+        return {"checked": True, "stale": False, "changed": [],
+                "snapshot_id": str(snapshot_id)}
     frozen = ctx.get("supply_pins") or {}
     if not frozen:
         return {"checked": False, "reason": "legacy_ticket", "stale": False,
@@ -103,10 +113,13 @@ def cmd_station(args: Any) -> dict[str, Any]:
     layout = Layout(resolve_data_root())
     writer = TicketWriter(layout, str(args.on))
     plan, ctx = _frozen(writer, str(args.on))
+    # 快照 ticket：清单字节先验；清单外的补采文件不影响这张 ticket 的合法性。
+    # legacy ticket：返回 (None, None)，后面走原有 checksum stale 闸。
+    _snapshot_id, snapshot_manifest = load_snapshot_for_ticket(ctx, layout.root)
 
     # S5-M3 stale 闸：数据变了就不许在这张 ticket 上续跑。放在最前面——等
     # Boundary 跑完再发现数据不同源，已经白算了一个工位。
-    stale = _supply_staleness(plan, ctx, layout.root)
+    stale = _supply_staleness(plan, ctx, layout.root, snapshot_manifest)
     if stale["stale"]:
         detail = "; ".join(
             f"{c['dataset']}({c['reason']})" for c in stale["changed"][:3])
@@ -142,7 +155,7 @@ def cmd_station(args: Any) -> dict[str, Any]:
         if ctx.get("live"):
             symbol_sets = load_json_dict(layout.symbol_sets, code=E1004, label="标的集表")
             _pins, _sets, _meta, supply_datasets = build_supply_context(
-                plan, symbol_sets, resolve_data_root(),
+                plan, symbol_sets, resolve_data_root(), manifest=snapshot_manifest,
             )
             kwargs.update(
                 use_capabilities=True,

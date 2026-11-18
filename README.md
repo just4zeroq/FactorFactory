@@ -441,11 +441,11 @@ python -m app.cli factors --status active
 
 | 写法 | 含义 |
 |---|---|
-| `mom20` | 内置因子池（12 个之一，见下） |
+| `mom20` | 内置因子池（26 个之一，见下） |
 | `db:<name>` / `db:<factor_id>` | 因子库里指定的那条 |
 | `db:*` | 库里全部 `active` |
 
-内置因子池：`mom5` `mom20` `mom60` `rev5` `rev1` `rv20` `hl_range` `vwap_gap` `vol_ratio` `funding_carry` `oi_change20` `basis_carry`。
+内置因子池（26 个）：`mom5` `mom20` `mom60` `rev5` `rev1` `rv20` `hl_range` `vwap_gap` `vol_ratio` `funding_carry` `funding_carry14` `funding_carry21` `funding_carry_rank7` `oi_change20` `basis_carry` `low_vol20` `low_vol60` `funding_lowvol14` `funding_volratio` `funding_volratio14` `funding_volratio21` `funding_basis7` `funding_volratio_basis` `funding_vol_interaction` `funding14_vol_interaction` `funding14_vol_interaction_scaled`。
 
 两种被排除的情况都会**留痕**（进 `Search.payload.prior_skipped`），不是静默丢弃：
 

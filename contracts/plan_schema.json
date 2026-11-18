@@ -20,7 +20,8 @@
         "market": { "type": "enum", "values": ["spot", "futures"], "required": false, "doc": "缺省 futures；决定 data/<dataset>/<exchange>/<market>/ 的落点，并进门禁 B 的第三道护栏" },
         "datasets": { "type": "list", "item": { "type": "enum", "values": ["ohlcv", "funding", "open_interest", "basis"] }, "required": true },
         "symbols": { "type": "str", "required": true, "doc": "标的集名；编译期解析成成员清单，不在此处内联" },
-        "frequency": { "type": "enum", "values": ["1m", "5m", "15m", "1h", "4h", "1d"], "required": true }
+        "frequency": { "type": "enum", "values": ["1m", "5m", "15m", "1h", "4h", "1d"], "required": true },
+        "snapshot": { "type": "str", "required": false, "doc": "数据快照 id 或 latest（缺省 latest）；编译期解析成 resolved_snapshot_id 并冻结" }
       }
     },
     "caliber": {

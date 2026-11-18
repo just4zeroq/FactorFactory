@@ -8,7 +8,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from pathlib import Path
+from typing import Any, Mapping
 
 from contracts.errors import exit_code_for
 
@@ -62,10 +63,109 @@ def load_json_dict(path: Any, *, code: str, label: str) -> dict[str, Any] | None
     return data
 
 
+def resolve_snapshot_for_plan(
+    plan: Mapping[str, Any], data_root: Any, *,
+    auto_create: bool = False, optional: bool = False,
+) -> tuple[str, dict[str, Any] | None]:
+    """解析计划声明的快照，并校验当前供给与快照一致。
+
+    返回 `(snapshot_id, manifest)`。未声明时取最新 active 快照；若库里没有
+    快照且 `auto_create=True`，先从当前供给建一份（兼容存量计划与迁移期）。
+    校验失败抛 E4002/E2005：数据变了就必须让 run 停下，不能悄悄用新数据。
+
+    `optional=True` 供只读命令（如 explain）使用：库里一份快照都没有且计划
+    也没声明时退回 legacy 视图，而不是让只读命令凭空造快照或拒绝解释。有
+    快照存在时仍然按清单解析，保证 explain 与 run 的指纹逐位一致。
+    """
+    from contracts.digest import blob_digest
+    from contracts.errors import E2005, FlowError
+    from services.snapshot_service import SnapshotService
+
+    supply = plan.get("supply") or {}
+    ref = supply.get("snapshot") if isinstance(supply, Mapping) else None
+    with SnapshotService(Path(data_root)) as svc:
+        if ref is None or str(ref).strip().lower() in {"", "latest"}:
+            if not svc.list(status="active", limit=1):
+                if auto_create:
+                    datasets = [str(x) for x in (supply.get("datasets") or [])]
+                    svc.create(
+                        datasets=datasets,
+                        exchange=str(supply.get("exchange") or ""),
+                        market=str(supply.get("market") or "futures"),
+                        note="auto-created for legacy plan",
+                    )
+                elif optional:
+                    return None, None
+        snapshot_id = svc.resolve(ref)
+        # verify 而不是 manifest：校验交给快照服务，避免两处各写一套 digest 比较。
+        manifest = svc.verify(snapshot_id)
+        return snapshot_id, manifest
+
+
+def load_snapshot_for_ticket(
+    ctx: Mapping[str, Any], data_root: Any,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """从冻结上下文取 run 当时绑定的快照并核对字节。
+
+    返回 `(None, None)` 表示 legacy ticket（本机制之前生成的 run），调用方
+    退回原来的「扫描当前目录」行为，不假装它也绑定了快照。归档快照允许读——
+    旧 run 的复盘不能因为快照被归档就失去可复现性。
+    """
+    from services.snapshot_service import SnapshotService
+
+    snapshot_id = ctx.get("resolved_snapshot_id")
+    if not snapshot_id:
+        return None, None
+    with SnapshotService(Path(data_root)) as svc:
+        manifest = svc.verify(str(snapshot_id))
+    return str(snapshot_id), manifest
+
+
+def _snapshot_stems(
+    manifest: Mapping[str, Any] | None, *, dataset: str,
+    exchange: str, market: str, timeframe: str,
+) -> tuple[str, ...] | None:
+    """把清单条目翻译成 `store.read_dataset` 认得的文件主干。
+
+    清单决定**可见集合**：补采产生的新文件不在旧清单里，因此对旧 run 不可见。
+    这里从 `relpath` 的文件名反推主干，与 `store.dataset_file` 的命名规则互逆；
+    真实符号仍由 `read_dataset` 从文件内容读取，不用文件名当事实。
+    `None` 表示没有快照（legacy），退回按目录扫描。
+    """
+    from contracts.errors import E2005, E4002, FlowError
+    from upstream import store
+
+    if manifest is None:
+        return None
+    suffix = f"-{timeframe}.parquet" if dataset == store.BAR_DATASET else ".parquet"
+    stems: list[str] = []
+    for entry in manifest.get("entries") or []:
+        if (entry.get("dataset"), entry.get("exchange"), entry.get("market")) != (
+                dataset, exchange, market):
+            continue
+        if dataset == store.BAR_DATASET and entry.get("timeframe") != timeframe:
+            continue
+        name = Path(str(entry["relpath"])).name
+        if not name.endswith(suffix):
+            raise FlowError(
+                E2005, f"快照清单的文件名不符合口径: {entry['relpath']}",
+                path="supply.snapshot",
+            )
+        stems.append(name[: -len(suffix)])
+    if not stems:
+        raise FlowError(
+            E4002, f"快照 {manifest.get('snapshot_id', '?')} 没有 "
+                   f"{dataset} 在 {exchange}/{market} 的数据文件",
+            path="supply.snapshot", hint="该 run 的计划声明了快照未覆盖的数据集",
+        )
+    return tuple(dict.fromkeys(stems))
+
+
 def build_supply_context(
     plan: dict[str, Any],
     symbol_sets: dict[str, Any] | None,
     data_root: Any,
+    manifest: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any], dict[str, Any]]:
     """按路径读文件、现算供给身份（19-supply.md §2.4）。
 
@@ -75,10 +175,15 @@ def build_supply_context(
     - `supply_meta`：门禁 B 核对 frequency/exchange/market 用的最小元信息；
     - `datasets`：内存里的 `store.Dataset`，供 live 直接转 `SupplyBatch`。
 
+    `manifest` 非空时，可见文件集合被严格限制在清单内——补采新文件不会悄悄
+    进入旧 run。辅助数据集仍按清单全量读（交易所本来就不给所有标的历史）；
+    面板标的集是清单的子集筛选，不是扩大。字节一致性由调用方在
+    `resolve_snapshot_for_plan` / `load_snapshot_for_ticket` 里先验过。
+
     这里**没有别名表**：数据在哪由约定路径决定，身份由内容决定——这正是
     「存储极简 + 身份现算」的全部含义。
     """
-    from contracts.errors import E1004, FlowError
+    from contracts.errors import E1004, E4002, FlowError
     from facilities.clock import Clock
     from runtime.gate_b import resolve_symbols
     from upstream import store
@@ -107,8 +212,30 @@ def build_supply_context(
         # 市场 × 数据集相容在这里再查一次：schema 已经拦了计划层，但
         # `build_supply_context` 是程序化入口，不该依赖「调用方一定跑过 schema」。
         store.require_market_dataset(market, dataset)
-        # 只有面板基座严格要求计划标的集；辅助数据集缺标的属常态（交易所不给历史）。
-        wanted = symbols if dataset == store.BAR_DATASET else None
+        visible = _snapshot_stems(
+            manifest, dataset=dataset, exchange=exchange,
+            market=market, timeframe=frequency,
+        )
+        if dataset == store.BAR_DATASET:
+            # 面板基座严格要求计划标的集；辅助数据集缺标的属常态（交易所不给历史）。
+            planned = tuple(store.file_stem(s) for s in symbols) if symbols else None
+            if visible is None:
+                wanted = planned
+            elif planned is None:
+                wanted = visible
+            else:
+                allowed = set(visible)
+                absent = [s for s, stem in zip(symbols, planned) if stem not in allowed]
+                if absent:
+                    raise FlowError(
+                        E4002,
+                        f"快照 {manifest.get('snapshot_id', '?')} 未包含计划标的: {absent[:5]}",
+                        path="supply.symbols",
+                        hint="该 run 声明的标的超出快照可见范围；换快照或改标的集重跑",
+                    )
+                wanted = planned
+        else:
+            wanted = visible
         item = store.read_dataset(
             data_root, dataset, exchange, market,
             symbols=wanted,

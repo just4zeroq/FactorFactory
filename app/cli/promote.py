@@ -153,6 +153,20 @@ def cmd_promote(args: Any) -> dict[str, Any]:
             already += 1
             skipped.append({"factor_id": cid, "reason": "already_in_catalog"})
 
+        # docs/21 §3.2：promote 同时把定义 + 首张证书落到 sqlite（真相源），
+        # 再物化回 jsonl。jsonl 的 Catalog 读取接口不变；旧 ticket 没有冻结
+        # 快照时退到 legacy 哨兵并标待复验。与 catalog.add 双写是迁移期约定，
+        # 两者以同一 entry 为输入，幂等且字节一致。
+        from services.factor_service import FactorService
+
+        frozen_ctx = info["frozen"].get("context") or {}
+        with FactorService(resolve_data_root()) as factors:
+            factors.record_promotion(
+                entry,
+                snapshot_id=frozen_ctx.get("resolved_snapshot_id"),
+                caliber_digest=(frozen_ctx.get("fingerprints") or {}).get("caliber_digest"),
+            )
+
     return envelope_ok("promote", args.run_id, {
         "promoted": promoted,
         "skipped": skipped,

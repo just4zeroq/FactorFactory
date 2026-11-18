@@ -15,6 +15,7 @@ from storage.layout import Layout
 
 from .common import (
     build_supply_context, envelope_ok, load_json_dict, load_plan, parse_overrides,
+    resolve_snapshot_for_plan,
 )
 
 from contracts.errors import E1004
@@ -35,8 +36,13 @@ def cmd_explain(args: Any) -> dict[str, Any]:
     )
 
     symbol_sets = load_json_dict(layout.symbol_sets, code=E1004, label="标的集表")
+    # 与 run 同快照视图：explain 报的指纹必须就是 run 会冻结的指纹。只读命令
+    # 不建快照；库里一份都没有时退回 legacy 视图（optional=True）。
+    _sid, snapshot_manifest = resolve_snapshot_for_plan(
+        plan, resolve_data_root(), optional=True,
+    )
     aliases, symbol_sets, supply_meta, _datasets = build_supply_context(
-        plan, symbol_sets, resolve_data_root(),
+        plan, symbol_sets, resolve_data_root(), manifest=snapshot_manifest,
     )
     compiled = compile_plan(
         baseline=None, plan=plan, overrides=overrides or None,
