@@ -18,6 +18,7 @@ from app.contract import (
 )
 from app.render import FORMATS, render
 from contracts.errors import FlowError
+from runtime.dotenv import load_dotenv
 
 from .common import coerce as _coerce
 from .common import envelope_error as _envelope_error
@@ -148,7 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--format", choices=FORMATS, default="json")
 
     sp = sub.add_parser("reconcile", help="登记库/产物链/对象存储三方一致性核对")
-    sp = sub.add_parser("stations")
+    sp.add_argument("--format", choices=FORMATS, default="json")
+
+    sp = sub.add_parser("stations", help="八工位清单（顺序与规格自省）")
     sp.add_argument("--format", choices=FORMATS, default="json")
 
     sp = sub.add_parser("fetch", help="四数据集采集（文件即事实）")
@@ -198,6 +201,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(raw)
     fmt = getattr(args, "format", "json")
     try:
+        # 组合根：把 .env 注入进程环境。数据根、凭据校验、BLAS 线程快照等
+        # 所有读 os.environ 的地方共用同一份本地配置；已存在的进程变量优先。
+        # 放在 try 内，配置写错会走信封报错（E1004 / 退出码 2），不是裸栈回溯。
+        load_dotenv()
         handler = _DISPATCH.get(args.command)
         if handler is None:
             raise FlowError(

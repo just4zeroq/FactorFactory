@@ -21,8 +21,9 @@ import pyarrow as pa
 import pytest
 
 from contracts import blob_digest
-from contracts.errors import E2002, E3003, E3006, E5002, E5004, FlowError
+from contracts.errors import E1004, E2002, E3003, E3006, E5002, E5004, FlowError
 from contracts import types as T
+from runtime.dotenv import ENV_FILE_PATH_VAR, dotenv_values, load_dotenv, parse_env
 from runtime.envelope import Envelope, build_envelope, require_credentials
 from runtime.store import (
     DEFAULT_DIRNAME, ENV_DATA_ROOT, ReadOnlyStore, StoreContext,
@@ -58,6 +59,97 @@ def test_default_lands_in_user_home():
     assert root.is_absolute()
     assert root.name == DEFAULT_DIRNAME
     assert str(root).startswith(str(Path.home()))
+
+
+# ---------------------------------------------------------- .env 配置源
+def _use_env_file(tmp_path, monkeypatch, text):
+    """把一份临时 .env 设为当前生效配置，并清掉进程里的同名变量。"""
+    path = tmp_path / ".env"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setenv(ENV_FILE_PATH_VAR, str(path))
+    monkeypatch.delenv(ENV_DATA_ROOT, raising=False)
+    return path
+
+
+def test_root_reads_dotenv(tmp_path, monkeypatch):
+    root = tmp_path / "from-dotenv"
+    _use_env_file(tmp_path, monkeypatch, f"# 本地配置\nexport FLOW_DATA_ROOT={root}\n")
+    assert dotenv_values() == {ENV_DATA_ROOT: str(root)}
+    assert resolve_data_root() == root
+
+
+def test_process_env_beats_dotenv(tmp_path, monkeypatch):
+    root = tmp_path / "from-process"
+    _use_env_file(tmp_path, monkeypatch, f"FLOW_DATA_ROOT={tmp_path / 'from-dotenv'}\n")
+    monkeypatch.setenv(ENV_DATA_ROOT, str(root))
+    assert resolve_data_root() == root
+
+
+def test_dotenv_beats_config_but_explicit_environ_is_isolated(tmp_path, monkeypatch):
+    root = tmp_path / "from-dotenv"
+    cfg = {"operations": {"data_root": str(tmp_path / "cfg")}}
+    _use_env_file(tmp_path, monkeypatch, f"FLOW_DATA_ROOT={root}\n")
+    assert resolve_data_root(config=cfg) == root
+    # 显式 environ 是隔离视图：连 .env 都不读（测试/复现用）。
+    assert resolve_data_root(environ={}) == Path.home() / DEFAULT_DIRNAME
+
+
+def test_parse_env_syntax():
+    text = (
+        "# 注释行\n"
+        "\n"
+        "export PLAIN=value # 行内注释\n"
+        "HASH=a#b\n"
+        'DOUBLE="a b\\nline\\tend"\n'
+        "SINGLE='${NOT_EXPANDED}'\n"
+        "EMPTY=\n"
+    )
+    assert parse_env(text) == {
+        "PLAIN": "value", "HASH": "a#b",
+        "DOUBLE": "a b\nline\tend", "SINGLE": "${NOT_EXPANDED}", "EMPTY": "",
+    }
+
+
+def test_parse_env_rejects_bad_syntax():
+    for text in ("NOT_A_LINE\n", 'A="unclosed\n', "A=${NO_SUCH_VAR_FF_TEST}\n"):
+        with pytest.raises(ValueError):
+            parse_env(text)
+
+
+def test_dotenv_error_is_structured(tmp_path, monkeypatch):
+    _use_env_file(tmp_path, monkeypatch, "NOT_A_LINE\n")
+    with pytest.raises(FlowError) as e:
+        dotenv_values()
+    assert e.value.error.code == E1004
+
+
+def test_load_dotenv_does_not_override_existing(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("A=1\nB=2\n", encoding="utf-8")
+    target = {"A": "keep"}
+    assert load_dotenv(path, environ=target) == {"B": "2"}
+    assert target == {"A": "keep", "B": "2"}
+
+
+def test_load_dotenv_injects_missing_keys(tmp_path, monkeypatch):
+    import os
+
+    path = tmp_path / ".env"
+    path.write_text("FF_TEST_DOTENV_KEY=from-file\n", encoding="utf-8")
+    monkeypatch.delenv("FF_TEST_DOTENV_KEY", raising=False)
+    assert load_dotenv(path) == {"FF_TEST_DOTENV_KEY": "from-file"}
+    assert os.environ["FF_TEST_DOTENV_KEY"] == "from-file"
+
+
+def test_cli_entry_wires_load_dotenv():
+    """组合根必须装载 .env。用 AST 守卫，避免把整条 CLI 导入链拉进地基测试。"""
+    tree = ast.parse((ROOT / "app/cli/__init__.py").read_text(encoding="utf-8"))
+    main = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "main")
+    hits = [n for n in ast.walk(main)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == "load_dotenv"]
+    assert len(hits) == 1, "CLI main() 必须且只需调用一次 load_dotenv()"
 
 
 # ---------------------------------------------------------------- 权限接口

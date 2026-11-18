@@ -1,7 +1,7 @@
 """数据根解析 + 四区权限接口（s0/03-runtime.md §1，09-app-storage.md §3）。
 
 两件事，互不混淆：
-1. 数据根解析：显式 > FLOW_DATA_ROOT > operations.data_root > ~/factorfactory
+1. 数据根解析：显式 > 进程环境变量 > .env > operations.data_root > ~/factorfactory
 2. 权限靠接口形状保证（s0/03 §1.1）：ReadOnlyStore / TicketWriter / DepotWriter
    三者互不兼容——执行器拿 TicketWriter，没有任何 Depot 写方法；能力层没有存储句柄。
 
@@ -19,8 +19,10 @@ from typing import Any, Mapping
 
 from contracts.digest import blob_digest
 from contracts.errors import E3003, E5001, E5004, FlowError
+from runtime.dotenv import dotenv_values
 from storage.layout import Layout
 
+#: 数据根的变量名。值可以来自进程环境，也可以来自仓库根的 .env（见 runtime.dotenv）。
 ENV_DATA_ROOT = "FLOW_DATA_ROOT"
 DEFAULT_DIRNAME = "factorfactory"
 
@@ -40,12 +42,20 @@ def resolve_data_root(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> Path:
-    """按拍板 3 的优先级解析数据根。
+    """解析数据根。
 
-    显式参数 > 环境变量 > 配置 operations.data_root > 默认个人目录。
-    不做 mkdir——解析是纯函数，是否建目录由调用方决定。
+    显式参数 > 进程环境变量 > ``.env`` > 配置 operations.data_root > 默认个人目录。
+    ``environ`` 显式传入时完全隔离外部配置（连 .env 都不读），供测试与复现使用。
+
+    不做 mkdir，也不写回 `os.environ`——解析仍是纯函数；是否建目录由调用方决定。
+    CLI 组合根另外调用 `load_dotenv()` 把 .env 注入进程环境，让凭据校验、
+    BLAS 线程快照等其它读取 `os.environ` 的地方看到同一份本地配置。
     """
-    env = environ if environ is not None else os.environ
+    if environ is None:
+        # 进程环境覆盖 .env：shell / CI 里的显式设置不该被本地文件悄悄改掉。
+        env: Mapping[str, str] = {**dotenv_values(), **os.environ}
+    else:
+        env = environ
     raw = explicit or env.get(ENV_DATA_ROOT)
     if not raw:
         ops = (config or {}).get("operations") or {}

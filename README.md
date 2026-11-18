@@ -85,22 +85,74 @@ pip install -r requirements.txt
 
 ---
 
-## 快速开始
+# 一、数据同步
 
-跑通只需要一个「数据根」——供给、票据、账本、日志都写在里面，**默认 `~/factorfactory`**，也可用 `FLOW_DATA_ROOT` 指到别处。仓库本身保持干净。
+所有数据落在**一个数据根**里；仓库本身保持干净。
 
-### 0. 准备数据根
+## 1.1 数据根
 
 ```bash
-export FLOW_DATA_ROOT=~/factorfactory          # Windows: $env:FLOW_DATA_ROOT="C:\data\factorfactory"
-
-mkdir -p "$FLOW_DATA_ROOT/schemas"
-cp examples/symbol_sets.json "$FLOW_DATA_ROOT/schemas/"
+cp .env.example .env      # 仓库已自带一份 .env，可跳过；按需改里面的 FLOW_DATA_ROOT
+ROOT=$(python -c "from runtime.store import resolve_data_root; print(resolve_data_root())")
+mkdir -p "$ROOT/schemas"
+cp examples/symbol_sets.json "$ROOT/schemas/"
 ```
 
-`schemas/symbol_sets.json` 是「标的集名 → 成员清单」的表。计划的 `supply.symbols` 只写集合名（**不内联成员**），编译期到这里解析；表不在，`run` 会以 `E1004` 拒绝，而不是猜一个标的池。
+数据根写在仓库根 `.env` 的 `FLOW_DATA_ROOT`（模板见 `.env.example`，`.env` 已被 `.gitignore` 忽略、不会入库）。启动 CLI 时 `.env` 会注入进程环境，无需 `export`；其它变量（凭据、线程数）也可以放进去。**进程里已有的环境变量优先**，所以 CI 或一次性命令仍可用 `FLOW_DATA_ROOT=/abs/path python -m app.cli ...` 临时覆盖，`.env` 不覆盖它。
 
-### 1. 采集
+解析优先级（`runtime/store.py`）：
+
+```
+显式入参  >  shell / CI 的 FLOW_DATA_ROOT  >  .env  >  计划里的 operations.data_root  >  ~/factorfactory
+```
+
+`.env` 查找顺序：`$FLOW_ENV_FILE` 显式路径 → 当前目录 `.env` → 仓库根 `.env`，**不向上逐级搜索**（避免静默捡到无关配置）。从别的目录启动就用 `FLOW_ENV_FILE=/abs/path/to/.env`。格式写错（不是 `KEY=VALUE`、引号未闭合、变量占位没解析）会以 `E1004` 明确失败，不会退回默认值。
+
+相对路径直接拒绝（`E5004`）——相对路径会随 cwd 漂移，可复现性就没了；`~/...` 会展开成绝对路径，可以用。
+
+数据根本身的布局（**路径即约定：没有 manifest、没有版本目录、没有别名表**）：
+
+```
+<数据根>/
+  ohlcv/<exchange>/<market>/<STEM>-<tf>.parquet     # bar，tf 是身份的一部分
+  funding/<exchange>/<market>/<STEM>.parquet        # 事件流，文件名不带 tf
+  open_interest/<exchange>/<market>/<STEM>.parquet
+  basis/<exchange>/<market>/<STEM>.parquet
+  schemas/symbol_sets.json                          # 标的集名 → 成员
+  runs/<ticket_id>/                                 # 一次执行的全部产物
+  db/{ledger,trials,events,published,members}.jsonl # 登记库（append-only）
+  facts/ catalog/ cache/ tmp/ plans/ baselines/     # 派生 / 因子库 / 可删 / 暂存
+```
+
+`<STEM>` = ccxt 符号把 `/` 与 `:` 换成 `_`：`BTC/USDT:USDT` → `BTC_USDT_USDT`。
+
+OHLCV 的值列固定 5 个：`open` `high` `low` `close` `volume`；事件流各 1 列：`funding_rate` / `open_interest` / `basis`。多写一列会让 checksum 变化而无从解释，所以列集是契约。
+
+`1d` 与 `4h` 是**两份数据**（各自的 tf 文件），不是同一份数据的两种视图。
+
+## 1.2 标的集表
+
+计划里 `supply.symbols` 只写**集合名**，不内联成员；编译期到 `schemas/symbol_sets.json` 解析。表不在 → `E1004` 拒绝，不猜标的池。
+
+格式是**扁平的 `{集合名: [成员...]}`**，不要套 `{"sets": {...}}` 外壳（`fetch` / `run` / `explain` 都只认扁平形态）：
+
+```json
+{
+  "crypto20": [
+    "BTC/USDT:USDT",
+    "ETH/USDT:USDT",
+    "SOL/USDT:USDT"
+  ],
+  "crypto20_spot": [
+    "BTC/USDT",
+    "ETH/USDT"
+  ]
+}
+```
+
+成员必须是 **ccxt 权威符号**：现货 `BTC/USDT`，线性永续 `BTC/USDT:USDT`。改这张表不进任何指纹——但它决定读哪些文件，缺成员会让 `run` 在门禁 B 上以 `E4002` 失败。
+
+## 1.3 采集（从交易所）
 
 ```bash
 python -m app.cli fetch \
@@ -109,67 +161,528 @@ python -m app.cli fetch \
   --start 2024-01-01 --end 2026-09-13
 ```
 
-`--exchange` 没有默认值：写错交易所比写错参数更难发现。OHLCV 之外的三条事件流只存在于合约市场；现货只允许 `ohlcv`。
+| 参数 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `--datasets` | 是 | — | 逗号分隔：`ohlcv` / `funding` / `open_interest` / `basis` |
+| `--symbol-set` | 二选一 | — | 从 `schemas/symbol_sets.json` 取成员 |
+| `--symbols` | 二选一 | — | 直接给 ccxt 符号，逗号分隔 |
+| `--exchange` | 是 | 无默认 | ccxt 交易所 id（`binance` / `binanceusdm` / `okx`…）。**故意不设默认**：写错交易所比写错参数更难发现 |
+| `--market` | 否 | `futures` | `spot` 只允许 `ohlcv`；事件流是合约的定义域 |
+| `--timeframe` | 否 | `1d` | 只对 `ohlcv` 生效 |
+| `--start` / `--end` | 是（交易所源） | — | RFC3339 或 `YYYY-MM-DD`（按 UTC 解释） |
+| `--from-v4` | 否 | — | 从 V4 feather 快照导入，见 1.5 |
+| `--revise` | 否 | 关 | 覆盖已写历史（默认 append-only） |
+| `--limit` | 否 | `1000` | ccxt 每页根数 |
+| `--spot-exchange` | 否 | `binance` | `basis` 由 perp/spot 收盘价派生，需要第二个客户端 |
+| `--format` | 否 | `json` | `table` / `json` / `ndjson` |
 
-**全部标的被跳过 → 命令失败退出**（`E4002` / exit 4），并逐标的给出 `skipped` 原因。「标的集与市场不匹配」「交易所 id 写错」「区间内没数据」在结果上长得一样，所以不能返回成功。
+**全部标的被跳过 → 命令失败**（`E4002` / exit 4），并逐标的给出 `skipped` 原因。「标的集与市场不匹配」「交易所 id 写错」「区间内没数据」在结果上长得一样，所以不能返回成功。
 
-### 2. 体检
+实测（2 标的，ohlcv + funding）：
+
+```json
+{"dataset": "ohlcv",   "symbols": 2, "rows_added": 2828, "revised": 0, "skipped": []}
+{"dataset": "funding", "symbols": 2, "rows_added": 8480, "revised": 0, "skipped": []}
+```
+
+## 1.4 增量同步（每日）
+
+**append-only**：同一 `(symbol, timestamp)` 的旧值永不覆盖，冲突只计数进 `revised`。所以「再采一次」天然就是增量同步，不需要删旧文件、不需要算断点。
+
+```bash
+# 每天把窗口往前推一天；重叠 7 天用来发现交易所改写历史
+END=$(date -u +%Y-%m-%d)
+START=$(date -u -d "-7 days" +%Y-%m-%d)
+
+python -m app.cli fetch \
+  --datasets ohlcv,funding,open_interest,basis \
+  --symbol-set crypto20 --exchange binanceusdm --market futures \
+  --start "$START" --end "$END"
+```
+
+重叠是刻意的：新增行计入 `rows_added`，**历史被改写**只在 `revised > 0` 时暴露。要真的覆盖历史必须显式 `--revise`（唯一会改写已落盘数据的方式，应当记档）。
+
+重复导入同一区间是幂等的——实测 `rows_added: 0, revised: 0`。定时任务每天跑一次即可（cron 不读你的 shell profile，所以显式给变量最稳；`cd` 到仓库根时也会读到那里的 `.env`）：
+
+```cron
+0 1 * * * cd /opt/FactorFactory && venv/bin/python -m app.cli fetch \
+  --datasets ohlcv,funding,open_interest,basis \
+  --symbol-set crypto20 --exchange binanceusdm --market futures \
+  --start $(date -u -d "-7 days" +\%F) --end $(date -u +\%F) >> logs/sync.log 2>&1
+```
+
+> 数据刷新**不会**逼你重建试验族：`policy_digest` 不含 supply pins，`blueprint_digest` 才含。但同一张 ticket 上的单步/重算会因 checksum 变化以 `E3002` 拒绝续跑（防「在另一份数据上重算出看似正常的结果」）。
+
+## 1.5 从 V4 快照导入
+
+已有 V4 的 feather 快照时不必重新联网：
+
+```bash
+python -m app.cli fetch \
+  --datasets ohlcv,funding --symbol-set crypto20 \
+  --exchange binanceusdm --from-v4 ../FactorMiner/data/binance
+```
+
+V4 侧的定位约定（只用于找文件，不用于反推符号——`1000PEPE` 与 `PEPE` 是两份数据，反推必然出错）：
+
+```
+<v4_root>/<market>/<STEM>-<tf>-<market>.feather              # OHLCV
+<v4_root>/<market>/crypto_streams/<STEM>-<tf>-<kind>.feather # funding / open_interest / basis
+```
+
+`--symbols` / `--symbol-set` 仍然必填（导入的标的清单必须由你声明）。V4 事件流文件名里的 `-1d-` 是假标签：真实结算间隔由数据决定，导入时现算。
+
+## 1.6 体检（采完必须做）
 
 ```bash
 python -m app.cli doctor --plan examples/plan_demo_crypto20.json
+python -m app.cli doctor --dataset ohlcv,funding --format table
 ```
 
-逐数据集给出：标的数、行数、`version`、`coverage`、`interval_ns`、`end_closed`、`gaps`、行数偏薄的标的。带 `--plan` 时还会核对计划声明的数据集与标的集成员是否都到位。
+逐数据集给出：标的数、行数、`version`（= checksum 前 16 位）、`coverage` 起止、`interval_ns`（实测中位步长）、`end_closed`、`gaps`（逐段）、`median_rows` 与偏薄标的。
 
-### 3. 跑一次完整流水线
+三条判据写死在命令里，不让调用方猜：
 
-```bash
-python -m app.cli run --plan examples/plan_demo_crypto20.json --live
+| 情况 | 结果 |
+|---|---|
+| 目录存在但读出来零行 | `empty`，不是 ok |
+| 有缺口（按各自原生间隔判定） | `reason_code=E4002`，不是 warning |
+| 末端未闭合（最后一根 bar 还没走完） | `passed=false` |
+| 某标的行数 < 中位数一半 | 单独列出（分位/覆盖率的分母会被拖偏），只告警不拦截 |
+
+`--plan` 时额外核对「计划声明的数据集与标的集成员是否都到位」；缺一个就报出来，因为 `read` 在给清单时 fail-closed，等到 `run` 才发现会白烧一次执行。
+
+实测（20 永续 + 现货 + 四数据集，5 组）：
+
+```
+ohlcv | binance     | spot    | 1d | 22 标的 | 56740 行 | 2017-08-17..2026-11-14 | passed=true
+ohlcv | binanceusdm | futures | 1d | 20 标的 | 29389 行 | 2019-12-19..2026-11-14 | passed=true
+funding       | binanceusdm | futures | 20 标的 | 84804 行 | interval_ns=28800000000000（8h）
+open_interest | binanceusdm | futures | 19 标的 |   475 行 | 仅 2026-10 起（交易所不给长历史）
+basis         | binanceusdm | futures | 19 标的 | 26847 行 | passed=true
+plan: missing_datasets=[], missing_symbol_count=0
 ```
 
-产出冻结方案（五个顶层指纹）+ 八个工位的 parcel + 每条候选的判据 + walk-forward 认证结果，落在 `$FLOW_DATA_ROOT/runs/<run_id>/`。
-
-去掉 `--live` 走 dummy 桩——只验证链路，不读真实数据。
-
-### 4. 看结果
-
-```bash
-python -m app.cli inspect --run-id <run_id>
-python -m app.cli inspect --run-id <run_id> --station Verdict --full
-```
-
-### 5. 入库与复用
-
-```bash
-python -m app.cli promote --run-id <run_id> --candidate <candidate_id> --yes
-python -m app.cli factors --status active
-```
-
-入库后，后续计划的 `prior_pool` 里可以直接写 `db:<name>` 引用它——先验池回灌，新计划不必从零开始搜。
-
-> **关于两份样例计划**：`examples/plan_demo_crypto20.json` 是最小可跑样例（20 标的、3 个先验因子 + 60 条随机表达式）；`examples/plan_cs_2026q4.json` 是完整形态（多算法 + 固定 ridge 组合 + 5 折认证），它引自设计文档里带注释的 YAML 样例，两者内容等价。**CLI 只读 JSON**，YAML 那份是给人读的规范文本。
-
+`open_interest` 这种短历史是**数据源事实**，不是采集失败——但它会让 `oi_change20` 类因子在长面板上不可观测，`Evidence` 会给出 `unobservable` 并留痕。
 
 ---
 
-## 命令一览
+# 二、一次完整的因子挖掘
 
-| 命令 | 用途 |
+下面这条序列就是一次完整实验，按顺序执行；每步都能单独重跑。
+
+```
+0 写计划 → 1 编译自检 → 2 体检 → 3 跑八工位 → 4 看产物
+        → 5 重算单点 → 6 入库 → 7 回灌 → 8 保留区 → 9 对账
+```
+
+## 2.0 全景（懒人版）
+
+```bash
+# 数据根取自 .env；临时换位置用 FLOW_DATA_ROOT=/abs/path python -m app.cli ...
+python -m app.cli pipeline --plan examples/plan_demo_crypto20.json --live
+```
+
+`pipeline` = 体检 → 跑 → 评估告警。体检不通过就停在 `state="stopped"`（`reason="supply_not_ready"`），不烧执行。它的参数与 `run` 完全一致，另加两个：
+
+| 参数 | 说明 |
 |---|---|
-| `run` | 跑完整八工位（`--live` 走真实能力层） |
-| `doctor` | 供给体检：覆盖 / 缺口 / 末端闭合 |
-| `fetch` | 四数据集采集（ohlcv / funding / open_interest / basis） |
-| `explain` | 解释某个参数从哪来（编译期展开的来源标注） |
-| `stations` / `station` | 工位清单 / 单步执行 |
-| `inspect` | 查 run 的工位产物 |
-| `evaluate` / `backtest` / `certify` | 从冻结 ticket 重算，**只读** |
-| `promote` / `factors` / `factor_db` | 因子库：入库 / 查询 / 下架 |
-| `holdout` | 揭示保留区（只揭示一次） |
-| `reconcile` | 登记库 / 产物链 / 对象存储三方核对 |
-| `estimate` | 按口径估算每期与年化成本 |
-| `pipeline` | 端到端编排（带告警） |
+| `--dataset` | 只体检指定数据集（逗号分隔） |
+| `--force` | 跳过体检；结果里恒带 `doctor_skipped: true`，不假装检查过 |
 
-所有命令支持 `--format {table,json,ndjson}`。
+首次跑建议逐步来，先看清每一环的输出。
+
+## 2.1 写计划
+
+计划是**唯一输入**；`--plan` 只吃 JSON（YAML 是给人读的规范文本，`charter.load_plan` 用 `json.loads`）。
+
+```bash
+cp examples/plan_demo_crypto20.json my_plan.json
+```
+
+| 样例 | 形态 | 说明 |
+|---|---|---|
+| `examples/plan_demo_crypto20.json` | 最小可跑 | 20 永续、3 个先验因子 + 60 条随机表达式、单算法 |
+| `examples/plan_cs_2026q4.json` | 完整形态 | 多算法（GP 200×30 + 随机 300）、固定 ridge 组合、5 折认证。它引用的标的集 `cs_top60_2026q3` **需要自备**（样例表里没有），照 1.2 的格式加一项即可 |
+
+全字段含义见第三章。
+
+## 2.2 编译自检
+
+```bash
+python -m app.cli explain --plan my_plan.json
+```
+
+输出每个叶子参数的**来源标注**（`plan` / `baseline` / `override` / `default`）与五个顶层指纹。它和 `run` 走同一套十步编译（含门禁 B），所以可以这样用：
+
+> `explain` 通过 ⇒ `run` 只可能因执行本身失败。
+
+编译器先用**无供给**编译挡一遍（结构层、跨字段、实现名），再去读数据算 pin。顺序反了会把「键拼错」报成「数据文件不存在」，把人骗去先采一遍数据。
+
+常用覆盖开关（`run` / `explain` / `pipeline` / `holdout` 同义）：
+
+| 参数 | 用途 |
+|---|---|
+| `--set a.b.c=v` | 点路径覆盖，值自动转 int/bool/JSON；来源标 `override`，指纹随之改变 |
+| `--no-strict` | 跳过必填字段检查（跨字段一致性仍校验） |
+| `--allow-constitutive-override` | 允许覆盖构成性块（`supply`/`caliber`/`boundary`/…），不加则 `E1005` |
+
+```bash
+python -m app.cli explain --plan my_plan.json --set search.seed=7
+```
+
+## 2.3 体检
+
+```bash
+python -m app.cli doctor --plan my_plan.json
+```
+
+判据见 1.6。`summary.passed=false` 时先修数据再往下跑：`run` 不会因为缺口而失败，它会照常产出候选、照常裁决，只是结论建立在一段有洞的时间轴上。
+
+## 2.4 跑八工位
+
+```bash
+python -m app.cli run --plan my_plan.json --live
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--plan` | 必填，JSON |
+| `--live` | 八个工位调真实能力层。**不加**则走 dummy 桩（链路演示，不产真实指标） |
+| `--set` / `--no-strict` / `--allow-constitutive-override` | 同 2.2 |
+| `--format` | `json`（默认）/ `table` / `ndjson` |
+
+即使不加 `--live`，编译期仍要读供给文件算 checksum（进 `blueprint_digest`），**所以数据必须已经采过**——`--live` 决定的是能力层走真实实现还是桩，不是「要不要数据」。
+
+实测输出（20 永续、63 候选）：
+
+```json
+{"run_id": "20261118T090912Z-bcdfece8",
+ "state": "done", "parcels": 8, "traces": 8, "origins_count": 62,
+ "fingerprints": {"plan_digest": "sha256:bcdfece8…", "blueprint_digest": "sha256:36bf5087…",
+                  "policy_digest": "sha256:89d59a88…", "caliber_digest": "sha256:a9d99a1d…",
+                  "domain_digest": "sha256:e89ad436…"},
+ "supply_datasets": ["basis", "funding", "ohlcv", "open_interest"],
+ "stage": "S7-live-capability", "exit_code": 0}
+```
+
+`run_id` 形如 `<UTC 紧凑时间>-<plan_digest 前 8 位>`，后面所有命令都用它定位。
+
+`state` 的三种结局都是**结论**，不是故障：`done`（跑完）、`skipped`（零候选过闸，`skip_reason` 说明原因，退出码仍为 0）、失败（带 error 对象与非零退出码）。
+
+## 2.5 看产物
+
+```bash
+python -m app.cli stations                                   # 八工位清单（顺序）
+python -m app.cli inspect --run-id <run_id>                  # 逐工位摘要
+python -m app.cli inspect --run-id <run_id> --station Verdict --full
+```
+
+摘要字段：`keys`（payload 顶层键，判断这站算没算）、`count`（候选/逐候选数量）、`evidence_grade`、`state`、`skip_reason`。
+
+实测这次样例跑：
+
+```
+Boundary  {}                                    Search    {"candidates": 63}
+Panel     {}                                    Evidence  {"per_candidate": 38}
+Target    {}                                    Verdict   {"per_candidate": 38}
+Portfolio {}                                    Certify   evidence_grade=out_of_sample
+```
+
+63 条候选 → 38 条进入评估（其余记在 `Search.payload.unobservable`，带 candidate_id 与原因）→ 38 条全部 `watch`、`tested:false`。**随机表达式样例本来就不该产出 pass**：这是判据在工作，不是链路坏了。
+
+单步重跑某一工位（只认 ticket 里的冻结方案，没有 `--plan`）：
+
+```bash
+python -m app.cli station Boundary --on <run_id>              # 观察：产物写 steps/
+python -m app.cli station Boundary --on <run_id> --commit     # 提交：产物写 parcels/ + 追加 state
+```
+
+- `--probe` 与 `--commit` 互斥（`E1001`）；无 flag 等同 probe——「没说要提交」不等于「允许提交」。
+- `append_only` 工位（Search / Verdict）拒绝 `--commit`（`E3006`）。
+- 数据被重新采集过 → `E3002`：不许在「另一份数据」上续跑。
+
+## 2.6 重算单点结论
+
+三条只读命令，全部只认**已落盘的 ticket**（不接 `--plan`，否则「重算」就成了「换参数再算一遍」）：
+
+```bash
+python -m app.cli evaluate --on <run_id>                        # 全部候选的暴露 + IC/ICIR
+python -m app.cli evaluate --on <run_id> --candidate sha256:21d31199…
+python -m app.cli backtest --on <run_id>                        # combine → allocate → backtest
+python -m app.cli certify  --on <run_id> --yes                  # walk-forward（写账本必须 --yes）
+```
+
+实测（同一张 ticket）：
+
+```
+evaluate  → ic_mean -0.0043, icir -0.0370, status observed
+backtest  → net_sharpe -2.79, net_return -0.5303, turnover 0.052,
+            cost_breakdown {fee 0.3161, slippage 0.1581, funding 0.0108, total 0.4850},
+            bars_per_year 365.0, annualisation_used calendar_365
+certify   → folds 3, n_bars 81, embargo 5, member_count 38,
+            net_sharpe -7.47, net_return -0.1016, evidence_grade out_of_sample
+```
+
+这三个数字难看是对的：样例计划的搜索空间是随机表达式，本来没有信号。它们证明的是**成本、资金费、年化、样本外划分都在真跑**。
+
+## 2.7 入库
+
+```bash
+python -m app.cli promote --run-id <run_id> --candidate sha256:21d31199… --yes
+python -m app.cli factors --status active
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--candidate` | 只晋升指定 candidate_id（可重复）。只能**缩小**范围，不能把 `reject` 拉进库 |
+| `--min-grade` | `any`（默认）/ `out_of_sample`（没有 OOS 认证就整体跳过，返回 `reason:"not_out_of_sample"`）/ `in_sample` |
+| `--yes` | 必填。promote 是 `writes_facts + writes_ledger` |
+
+三条规则：能不能入库由 Verdict 的 `decision`（`pass` / `watch`）决定，不由你决定；表达式必须来自 Search 产物（按 candidate_id join，找不到 → `E3003`）；重复执行不是错误（跳过并如实报 `already_in_catalog`）。
+
+实测：
+
+```json
+{"promoted": [{"factor_id": "sha256:21d31199…", "name": "mom20:21d31199", "decision": "watch"}],
+ "counts": {"candidates": 38, "promoted": 1, "already": 0, "skipped": 37},
+ "evidence_grade": "out_of_sample", "catalog_total": 38}
+```
+
+`factors` 查库：`--status active|retired|all`、`--limit N`。`factor_db` 是写侧：`--retire <factor_id> --note "原因" --yes`（追加一条记录改状态，不删行）。
+
+## 2.8 回灌（把挖到的因子当下一轮先验）
+
+下一份计划的 `search.prior_pool` 直接写引用，不必从零开始搜：
+
+```json
+"prior_pool": ["mom20", "basis_carry", "db:mom20:21d31199", "db:*"]
+```
+
+| 写法 | 含义 |
+|---|---|
+| `mom20` | 内置因子池（12 个之一，见下） |
+| `db:<name>` / `db:<factor_id>` | 因子库里指定的那条 |
+| `db:*` | 库里全部 `active` |
+
+内置因子池：`mom5` `mom20` `mom60` `rev5` `rev1` `rv20` `hl_range` `vwap_gap` `vol_ratio` `funding_carry` `oi_change20` `basis_carry`。
+
+两种被排除的情况都会**留痕**（进 `Search.payload.prior_skipped`），不是静默丢弃：
+
+- `field_unavailable`：因子引用了当前数据集没有的字段。例如 `funding_carry` 放进现货计划，或 `vwap_gap` 用到供给里不存在的 `vwap` 列（OHLCV 只采 5 列）。
+- `unknown`：名字既不在内置池也不在库里 → `E1015`（配置错误）。
+
+## 2.9 保留区（只看一次）
+
+```bash
+python -m app.cli holdout --plan my_plan.json --yes
+```
+
+区间来自计划 `boundary.time_axis.holdout`，**命令行不能临时指定**——保留区是研究设计的一部分。揭示写 `db/events.jsonl` 的一次性键；第二次执行不报错，但 `first_time: false`。
+
+`holdout: "reserved"` 时拒绝（`E1004`）：还没划出保留区就谈不上揭示。
+
+## 2.10 对账
+
+```bash
+python -m app.cli reconcile
+```
+
+三方核对：登记库（`db/*.jsonl` 每行可解析、digest 格式合法）、产物链（`parcel.json` → payload 存在且 digest 对拍、lineage 上游存在）、对象存储（派生 `*_ref` 的对象文件与 sidecar 存在、blob_digest 对拍）。发现不一致 → `E2005` / exit 3，因为「事实层不自洽」不是执行失败。
+
+实测：`tickets 1, parcels 8, registers {trials 0, events 35, published 0, members 0}, violations 0`。
+
+---
+
+# 三、计划配置参考
+
+## 3.1 顶层骨架
+
+```json
+{
+  "plan": "demo_crypto20",
+  "baseline": "v1",
+  "supply":   { "exchange": "binanceusdm", "market": "futures",
+                "datasets": ["ohlcv","funding","open_interest","basis"],
+                "symbols": "crypto20", "frequency": "1d" },
+  "caliber":  { "execution": {}, "label": {}, "allocate": {}, "net": {} },
+  "boundary": { "impl": "pit_dynamic_topk", "params": {}, "time_axis": {} },
+  "panel":    { "impl": "point_in_time_align", "params": {} },
+  "target":   { "impl": "forward_return_cs" },
+  "search":   { "algorithms": [], "prior_pool": [], "trial_family": "", "seed": 0 },
+  "evidence": { "impl": "two_stage_funnel", "params": {} },
+  "verdict":  { "impl": "sentinel", "params": {} },
+  "portfolio":{ "combiner": "fixed_ridge", "window": {} },
+  "certify":  { "impl": "walk_forward", "params": {} },
+  "operations": { "cache": true, "workers": 1, "log_level": "info" }
+}
+```
+
+`plan` / `baseline` / `supply` / `caliber` / `boundary` / `panel` / `target` / `search` / `evidence` / `verdict` / `portfolio` / `certify` 进指纹；`operations` 不进任何指纹（`cache` / `workers` / `log_level` 改了不换实验）。
+
+## 3.2 supply（数据供给）
+
+| 键 | 必填 | 取值 | 进哪道门禁 |
+|---|---|---|---|
+| `exchange` | 是 | ccxt id | 门禁 B：与事实清单的 exchange 比对 |
+| `market` | 否（默认 `futures`） | `spot` / `futures` | 门禁 B 第三道 |
+| `datasets` | 是 | 上述四者的子集 | 逐个必须已采集 |
+| `symbols` | 是 | 标的集名 | `digest(计划标的集) == pin.symbols_digest` |
+| `frequency` | 是 | `1m` `5m` `15m` `1h` `4h` `1d` | 决定读哪个 `<STEM>-<tf>.parquet` |
+
+门禁 B 的三条判据：标的集 digest 一致、数据新鲜度（`acquired_at >= coverage.end`）、供给维度（frequency / exchange / market 与事实清单一致）。
+
+## 3.3 caliber（唯一口径源，四个子块全构成性）
+
+| 子块 | 键 | 取值 | 说明 |
+|---|---|---|---|
+| `execution` | `entry` | `next_open` / `next_close` | `current_close` 被拒：权重由收盘算出却按同一根 bar 成交＝前视 |
+| | `rebalance` | ≥1（bar） | 换仓间隔；`rebalance=1` 逐 bar 换 |
+| | `annualisation` | `calendar_365` | 加密 24/7，只允许 365；252 直接拒 |
+| | `funding` | `per_contract_events` | 只按事件求和（结算周期是数据属性，不进口径） |
+| `label` | `horizon` | ≥1（bar） | 预测跨度 |
+| | `transform` | `cs_rank` / `cs_zscore` / `cs_rank_zscore` | 截面变换（只作用于 score，不作用于收益） |
+| | `neutralise` | `beta` / `log_dollar_volume` 的子集 | 空列表合法 |
+| | `neutralise_window` | ≥2 | `neutralise` 非空时必填 |
+| | `overlap_policy` | `independent_sample` / `nw_adjusted` | 重叠样本处理；`rebalance < horizon` 时必填 |
+| | `min_width` | ≥1 | 截面宽度下限（20 标的计划别写 40） |
+| | `width_policy` | `keep` / `drop` | 宽度不足时保留还是丢弃 |
+| `allocate` | `quantiles` / `long_short` | — | 分位与多空构造 |
+| | `weighting` | `equal` / `liquidity` / `inv_vol` | 权重方案 |
+| | `max_weight` / `net_exposure` / `turnover_max` / `min_members` | — | 约束 |
+| `net` | `cost_tiers` | bp 列表，如 `[20,60,150]` | 成本档（单边） |
+| | `slippage` | `none` / `fixed` / `tiered` | `tiered` 取该档的一半 |
+| | `fee_model` | `taker_with_funding` / … | 含 funding 时才读 funding 数据集 |
+| | `max_leverage` / `initial_margin` / `maintenance_margin` / `liquidation_buffer` | — | 保证金与强平缓冲 |
+
+口径字段**不允许出现在命令行**：`app/contract.py` 在启动期扫描全部开关，命中即 `E1020`（否则 Web 请求可绕过编译期一致性检查）。
+
+估算这套口径的成本：
+
+```bash
+python -m app.cli estimate --plan my_plan.json --turnover 1.0
+```
+
+实测（`rebalance=5` → 73 期/年，`turnover=1.0`、`slippage=tiered`）：
+
+```
+20bp  → 每期 0.0030 → 年化 0.2190
+60bp  → 每期 0.0090 → 年化 0.6570
+150bp → 每期 0.0225 → 年化 1.6425
+```
+
+在这个换手下，150bp 档要求毛收益年化 164% 才不亏。资金费不在估算内（按事件逐 bar 计）。
+
+## 3.4 八个工位块
+
+| 块 | `impl` | 关键 `params` |
+|---|---|---|
+| `boundary` | `pit_dynamic_topk` | `k`（池大小）、`tier_window`（分层滚动窗口）、`min_coverage`；`time_axis: {mine, oos, holdout}` |
+| `panel` | `point_in_time_align` | `drop_unclosed`（未收盘 bar 丢不丢） |
+| `target` | `forward_return_cs` | 无 params（口径全部来自 `caliber.label` / `caliber.execution`） |
+| `search` | 由 `algorithms` 决定 | `algorithms: [{name, params}]`、`prior_pool`、`trial_family`、`seed` |
+| `evidence` | `two_stage_funnel` | `null_model`（`within_bar_cross_asset`）、`prefilter.min_coverage` |
+| `verdict` | `sentinel` | `dsr_min`（**概率阈值 0.95**，不是 p 值）、`fdr_max`、`cost_adj_min` |
+| `portfolio` | 由 `combiner` 决定 | `combiner`、`window: {fit, embargo, eval}`、`orthogonalise`（`none`/`symmetric`）、`corr_max` |
+| `certify` | `walk_forward` | `folds`、`embargo`；OOS 窗口只从 `boundary.time_axis.oos` 取 |
+
+时间轴写法：`"YYYY-MM-DD..YYYY-MM-DD"`；`holdout` 可写 `"reserved"`（未划出）。
+
+四个容易踩的点：
+
+1. **`time_axis.oos` 必须存在**。认证窗口是「未参与搜索的那段」，没有 OOS 就产不出可发布结论——`--live` 时 `E1008`。
+2. **`portfolio.window` 的 `eval` 不能与 `fit` 相邻**：中间要留 `embargo` 根 bar，否则 `E1021`（隔离区里不能有样本）。`fit` 终点 = `eval` 起点 − embargo。
+3. **`boundary` 与 `portfolio` 的区间必须落在 `mine` 内**：`mine` 是搜索区，`oos` 是认证区，`holdout` 是保留区，三者不重叠。
+4. **`rebalance < horizon` 时 `overlap_policy` 必填**（标签会重叠）；`horizon` 与 `rebalance` 都进口径指纹，改任一个都是新实验。
+
+搜索算法（`search.algorithms[].name`）：
+
+| 算法 | 参数 | 说明 |
+|---|---|---|
+| `gp_symbolic` | `population`、`generations`、`max_depth` | deap 遗传规划，需要 fitness（与其它需要 fitness 的算法不能并发：`E2009`） |
+| `random_expression` | `max_candidates` | 无 fitness 的随机基线，给 GP 一个对照 |
+
+多算法共享**同一个** fitness 计数与 seen 集合——`n_trials` 因此是全家族口径，不是单算法口径。`trial_family` 进裁决的 `family` 字段，跨 run 的同族计数靠它串起来。
+
+## 3.5 operations
+
+```json
+"operations": { "cache": true, "workers": 1, "log_level": "info" }
+```
+
+`workers` 目前必须为 1（状态在进程内存）；`cache` 关掉只会变慢，不改变结论；`log_level` 只影响日志。三者都不进指纹。
+
+---
+
+# 四、命令速查
+
+## 4.1 命令面
+
+| 命令 | mutation | 用途 | 关键参数 |
+|---|---|---|---|
+| `fetch` | 写供给 | 四数据集采集 | `--datasets` `--symbol-set`/`--symbols` `--exchange` `--market` `--timeframe` `--start` `--end` `--from-v4` `--revise` `--limit` `--spot-exchange` |
+| `doctor` | 只读 | 供给体检 | `--plan` `--dataset` |
+| `estimate` | 只读 | 成本估算 | `--plan` `--turnover` |
+| `explain` | 只读 | 编译来源与指纹 | `--plan` `--set` `--no-strict` `--allow-constitutive-override` |
+| `run` | 写事实 | 跑八工位 | `--plan` `--live` `--set` `--no-strict` `--allow-constitutive-override` |
+| `pipeline` | 写事实 | 体检 → 跑 → 告警 | 同 `run` + `--dataset` `--force` |
+| `stations` | 只读 | 工位清单 | — |
+| `station <name>` | 写事实 | 单步执行 | `--on` `--probe` `--commit` |
+| `inspect` | 只读 | 查 ticket 产物 | `--run-id` `--station` `--full` |
+| `evaluate` | 只读 | 重算暴露 + IC/ICIR | `--on` `--candidate` |
+| `backtest` | 只读 | 重算组合净表现 | `--on` |
+| `certify` | 写事实+账本 | 重算 walk-forward | `--on` `--yes` |
+| `promote` | 写事实+账本 | 候选入库 | `--run-id` `--candidate` `--min-grade` `--yes` |
+| `factors` | 只读 | 查因子库 | `--status` `--limit` |
+| `factor_db` | 写事实 | 下架 / 统计 | `--retire` `--note` `--yes` |
+| `holdout` | 写账本 | 揭示保留区 | `--plan` `--set` `--yes` |
+| `reconcile` | 只读 | 三方一致性核对 | — |
+
+所有命令都支持 `--format {table,json,ndjson}`（默认 `json`）。`experiment` 是 `run` 的旧名别名。
+
+## 4.2 退出码
+
+| 码 | 含义 | 典型错误 | 该找谁 |
+|---|---|---|---|
+| 0 | 成功（含「零候选」这种结论性跳过） | — | — |
+| 1 | 执行失败 | `E3xxx`（这一步没成功）、`E5xxx`（落盘/权限） | 代码 / 环境 |
+| 2 | 用法与配置 | `E1004` 类型枚举、`E1008` 缺必填、`E1005` 构成性覆盖、`E1020` 口径开关 | 改配置 |
+| 3 | 契约违反 | `E2005` 对账不一致、`E3002` 供给已失效 | 按 bug 处理 |
+| 4 | 供给失败 | `E4002` 零成功/缺数据集、`E4004` 供给不可读 | 先同步数据 |
+
+## 4.3 一次完整实验（复制粘贴版）
+
+```bash
+set -e                              # 任一命令非零退出即停：失败信封里没有 run_id
+# 数据根取自仓库根的 .env；临时覆盖用 FLOW_DATA_ROOT=/abs/path python -m app.cli ...
+PY="python -m app.cli"
+
+# 1. 同步数据（首次给长区间，之后每天只传增量）
+$PY fetch --datasets ohlcv,funding,open_interest,basis \
+  --symbol-set crypto20 --exchange binanceusdm --market futures \
+  --start 2024-01-01 --end "$(date -u +%F)"
+
+# 2. 体检 + 成本认知
+$PY doctor --plan my_plan.json --format table
+$PY estimate --plan my_plan.json --turnover 1.0 --format table
+
+# 3. 编译自检 → 跑
+$PY explain --plan my_plan.json
+RUN=$($PY run --plan my_plan.json --live \
+      | python -c "import json,sys;print(json.load(sys.stdin)['run_id'])")
+
+# 4. 看产物 → 重算
+$PY inspect --run-id "$RUN"
+$PY backtest --on "$RUN"
+$PY certify  --on "$RUN" --yes
+
+# 5. 入库 → 回灌（下一份计划的 prior_pool 写 db:*）
+$PY promote --run-id "$RUN" --min-grade out_of_sample --yes
+$PY factors --status active --limit 20
+
+# 6. 对账
+$PY reconcile
+```
 
 ---
 
@@ -241,10 +754,11 @@ python -m pytest tests -q
 
 从 [`docs/INDEX.md`](docs/INDEX.md) 开始——按「你想知道什么」导航。
 
-- 想知道怎么设计的 → `README.md` §1/§3 → `01`–`06`
+- 想知道怎么设计的 → 本文「架构」一节 → `01`–`06`
 - 想知道一行结论怎么算出来的 → `06-evaluation.md`
 - 想知道每个模块有没有问题 → `reviews/module-review/00_progress.md`
 - 想知道配置单每个键什么意思 → `18-plan-schema.md`
+- 想知道数据怎么落盘 → `19-supply.md`
 - 想知道凭什么信它 → `14-test-strategy.md`、`ACCEPTANCE.md`
 
 ---
