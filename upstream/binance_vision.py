@@ -291,65 +291,58 @@ def download_vision(
         lambda url: _http_get(url, timeout=timeout, retries=retries, proxy=proxy)
     )
     reports: list[Any] = []
-    for dataset in datasets:
-        report = FetchReport(dataset=dataset, source="binance-vision")
-        # 每个 (标的, 月) 一个任务。结果先按标的归集，再落盘——落盘仍由主线程
-        # 串行做，避免多线程写同一 parquet（每个标的只有一次 upsert）。
-        tasks: list[tuple[str, str]] = [
-            (ccxt_symbol, month) for ccxt_symbol in symbols for month in months
-        ]
-        collected: dict[str, list[pd.DataFrame]] = {s: [] for s in symbols}
-        missing_count: dict[str, int] = {s: 0 for s in symbols}
-        error_count: dict[str, int] = {s: 0 for s in symbols}
-        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            futures = {
-                pool.submit(_fetch_month, dataset, s, m, timeframe, start, end, get): (s, m)
-                for s, m in tasks
-            }
-            for future in as_completed(futures):
-                sym, _month = futures[future]
-                frame, status = future.result()
-                if status == "missing":
-                    missing_count[sym] += 1
-                elif status == "error":
-                    error_count[sym] += 1  # 网络软失败：记录后可重跑补齐
-                elif frame is not None and not frame.empty:
-                    collected[sym].append(frame)
-
-        for ccxt_symbol in symbols:
-            frames = collected[ccxt_symbol]
-            if not frames:
-                report.skipped.append({
-                    "symbol": ccxt_symbol, "reason": "no_months",
-                    "detail": f"{len(months)} 个月无归档（未上市或区间外）",
-                })
-                continue
-            frame = pd.concat(frames, ignore_index=True)
-            frame = frame.drop_duplicates(subset=[store.TIMESTAMP_COL], keep="last")
-            frame = frame.sort_values(store.TIMESTAMP_COL, kind="mergesort").reset_index(drop=True)
-            if frame.empty:
-                report.skipped.append({"symbol": ccxt_symbol, "reason": "empty_window"})
-                continue
-            target = store.dataset_file(
-                root, dataset, exchange, market, ccxt_symbol,
-                timeframe if dataset == store.BAR_DATASET else None,
-            )
-            stats = store.upsert(target, frame, dataset, symbol=ccxt_symbol, revise=revise)
-            report.symbols += 1
-            report.rows_added += stats["added"]
-            report.revised += stats["revised"]
-            if missing_count[ccxt_symbol]:
-                report.skipped.append({
-                    "symbol": ccxt_symbol, "reason": "missing_months",
-                    "count": missing_count[ccxt_symbol],
-                })
-            if error_count[ccxt_symbol]:
-                report.skipped.append({
-                    "symbol": ccxt_symbol, "reason": "network_errors",
-                    "count": error_count[ccxt_symbol],
-                    "hint": "代理/网络抖动导致这些月份未下载；重跑同一命令可补齐（append-only）",
-                })
-        reports.append(report)
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for dataset in datasets:
+            report = FetchReport(dataset=dataset, source="binance-vision")
+            for ccxt_symbol in symbols:
+                # 按标的分批：一个标的的所有月份并发下载，收齐后立即落盘。
+                # 逐标的提交而非一次性全提交，好处是中途就可见进度、进程被打断
+                # 时已完成标的的数据仍在盘上（append-only 重跑只补缺口）。
+                futures = [
+                    pool.submit(_fetch_month, dataset, ccxt_symbol, m,
+                                timeframe, start, end, get)
+                    for m in months
+                ]
+                frames: list[pd.DataFrame] = []
+                missing = errors = 0
+                for future in as_completed(futures):
+                    frame, status = future.result()
+                    if status == "missing":
+                        missing += 1
+                    elif status == "error":
+                        errors += 1  # 网络软失败：记录后可重跑补齐
+                    elif frame is not None and not frame.empty:
+                        frames.append(frame)
+                if not frames:
+                    report.skipped.append({
+                        "symbol": ccxt_symbol, "reason": "no_months",
+                        "detail": f"{len(months)} 个月无归档（未上市或区间外）",
+                    })
+                    continue
+                frame = pd.concat(frames, ignore_index=True)
+                frame = frame.drop_duplicates(subset=[store.TIMESTAMP_COL], keep="last")
+                frame = frame.sort_values(store.TIMESTAMP_COL, kind="mergesort").reset_index(drop=True)
+                if frame.empty:
+                    report.skipped.append({"symbol": ccxt_symbol, "reason": "empty_window"})
+                    continue
+                target = store.dataset_file(
+                    root, dataset, exchange, market, ccxt_symbol,
+                    timeframe if dataset == store.BAR_DATASET else None,
+                )
+                stats = store.upsert(target, frame, dataset, symbol=ccxt_symbol, revise=revise)
+                report.symbols += 1
+                report.rows_added += stats["added"]
+                report.revised += stats["revised"]
+                if missing:
+                    report.skipped.append({
+                        "symbol": ccxt_symbol, "reason": "missing_months", "count": missing,
+                    })
+                if errors:
+                    report.skipped.append({
+                        "symbol": ccxt_symbol, "reason": "network_errors", "count": errors,
+                        "hint": "网络抖动致部分月份未下载；重跑同一命令可补齐（append-only）",
+                    })
+            reports.append(report)
     return reports
 
 
