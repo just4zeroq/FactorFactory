@@ -80,3 +80,17 @@ def test_missing_breadth_evidence_is_not_eligible():
     check = next(c for c in row["checks"] if c["name"] == "oos_breadth")
     assert check["status"] == "missing"
     assert sc["eligible_candidates"] == []
+
+
+def test_flat_ticket_shape_is_read_without_manual_wrapping():
+    """真实 ticket 的 frozen.plan 是完整 plan dict，"plan" 键只是名字字符串。
+
+    研究期临时脚本手工包成 {frozen:{plan:{plan:<完整 plan>}}} 才让本模块能跑——
+    零生产引用直接掩盖了这个结构错误。CLI 用真实 read_ticket 结果时必须能读。
+    """
+    info = _info(8)
+    info["frozen"]["plan"] = {**PLAN, "plan": "confirm_run"}
+    sc = build_scorecard(info)  # 不传 plan，走 frozen 读取
+    assert sc["profile"]["name"] == "strict_institutional_v1"
+    assert sc["profile"]["locked"] is True
+    assert len(sc["eligible_candidates"]) == 1

@@ -237,7 +237,12 @@ def _regime_summary(folds: Any) -> dict[str, Any]:
 def build_scorecard(info: Mapping[str, Any],
                     plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """从 ticket 产物生成 scorecard；只读，不改任何账本。"""
-    frozen_plan = (((info.get("frozen") or {}).get("plan") or {}).get("plan") or {})
+    # 真实 ticket：frozen.plan 是完整 plan dict（其中 "plan" 键是计划名字符串）。
+    # 兼容研究期临时脚本曾用的双层包装 {frozen:{plan:{plan:<完整 plan>}}}——
+    # 那层包装正是本模块零生产引用时手工伪造出来的，不能当成唯一真相。
+    frozen = info.get("frozen") or {}
+    blob = frozen.get("plan") or {}
+    frozen_plan = blob.get("plan") if isinstance(blob.get("plan"), dict) else blob
     effective_plan = plan if plan is not None else frozen_plan
     profile = resolve_profile(effective_plan)
     payloads = info.get("payloads") or {}

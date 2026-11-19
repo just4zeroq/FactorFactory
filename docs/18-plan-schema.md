@@ -74,6 +74,8 @@ S0 的验收里有五条（S0-1 ~ S0-5）全部是「配置写错了会怎样」
 
 **`evaluation` 是预注册评价档位，不是结果出来后的旋钮。** `profile` 只允许 `strict_institutional_v1` / `exploratory_v1` / `diagnostic_v1`；`thresholds` 只允许覆盖档位声明过的白名单键。任何阈值覆盖都会把 scorecard 标成 `profile_locked=false` 并取消晋升资格。缺省档位是 `strict_institutional_v1`，但如果计划没有显式写 `evaluation`，scorecard 同样标记为未预注册。这样「因子没过就换个指标再算」不能伪装成同一份研究。
 
+评分卡的查看与执行：`flow scorecard --run-id <id>` 按冻结档位生成六层证据卡（只读，`--full` 带完整 checks）。晋升时 `flow promote` 在档位已冻结且未覆盖的前提下，把 scorecard 的 `eligible_for_promotion` 作为 verdict 之外的第二道闸门；档位未锁的历史 run 保留 verdict-only 行为但在回执里显式告警，不追溯否定旧结论。
+
 **`supply.symbols` 是名字，不是成员清单。** 成员在编译期由标的集解析出来并固化进 `Boundary` 产物。把 60 个 symbol 内联进计划有两个后果：一是每次调仓都要改配置文件，二是不存在「同一份计划、同一份成员」这个可比对的对象。
 
 ---

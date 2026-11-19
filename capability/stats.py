@@ -115,11 +115,6 @@ def trailing_coverage(mask: np.ndarray, window: int) -> np.ndarray:
     return out
 
 
-def trailing_rank_pct(x: np.ndarray) -> np.ndarray:
-    """逐时点横截面秩，用于分层与 top-k 选择。"""
-    return cs_rank(x)
-
-
 def forward_return(price: np.ndarray, horizon: int, *, entry_offset: int = 0) -> np.ndarray:
     """标签：`p[t + entry_offset + h] / p[t + entry_offset] - 1`。
 

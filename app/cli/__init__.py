@@ -38,6 +38,7 @@ from .reconcile import cmd_reconcile
 from .replay import cmd_backtest, cmd_certify, cmd_evaluate
 from .replay_ops import cmd_replay
 from .run import cmd_run
+from .scorecard import cmd_scorecard
 from .snapshot import cmd_snapshot
 from .station import cmd_station
 from .stations import cmd_stations
@@ -52,7 +53,7 @@ _DISPATCH: dict[str, Callable[[Any], dict[str, Any]]] = {
     "reconcile": cmd_reconcile,
     "evaluate": cmd_evaluate, "backtest": cmd_backtest, "certify": cmd_certify,
     "snapshot": cmd_snapshot, "replay": cmd_replay,
-    "vision": cmd_vision,
+    "vision": cmd_vision, "scorecard": cmd_scorecard,
 }
 
 # 已声明但还没有入口的命令：给出一条能指路的拒绝，而不是让 KeyError 变成
@@ -222,6 +223,12 @@ def build_parser() -> argparse.ArgumentParser:
     vf.add_argument("--workers", type=int, default=8, help="并发下载线程数（默认 8）")
     vf.add_argument("--revise", action="store_true", help="覆盖已写历史")
     vf.add_argument("--format", choices=FORMATS, default="json")
+
+    sp = sub.add_parser("scorecard", help="按 run 前冻结的档位生成评分卡（只读）")
+    sp.add_argument("--run-id", required=True)
+    sp.add_argument("--candidate", help="只看指定 candidate_id")
+    sp.add_argument("--full", action="store_true", help="带完整 checks")
+    sp.add_argument("--format", choices=FORMATS, default="json")
 
     sp = sub.add_parser("stations", help="八工位清单（顺序与规格自省）")
     sp.add_argument("--format", choices=FORMATS, default="json")

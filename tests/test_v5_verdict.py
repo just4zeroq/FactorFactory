@@ -161,6 +161,25 @@ def test_verdict_rejects_weak_candidate_with_all_reasons():
     assert set(row["reason_codes"]) == {"dsr_fail", "fdr_fail", "cost_fail", "null_fail"}
 
 
+def test_promotable_decision_excludes_unexamined_watch():
+    """watch 是"不下结论"，不是通过章。insufficient_n（没检验）不得进下游。
+
+    combine/certify/bridge/promote 四处统一走 promotable_decision，避免各自
+    硬编码 {pass,watch} 时把 OOS 单名押注的 artifact 一路放行到晋升。
+    """
+    from capability.ops.verdict import promotable_decision
+
+    assert promotable_decision({"decision": "pass"}) is True
+    # redundant 是真信号（检验过、只是不独立），仍可进下游
+    assert promotable_decision({"decision": "watch",
+                                "reason_codes": ["redundant"]}) is True
+    # insufficient_n 没检验，禁止
+    assert promotable_decision({"decision": "watch",
+                                "reason_codes": ["insufficient_n"]}) is False
+    assert promotable_decision({"decision": "watch"}) is True  # 老产物无 reason
+    assert promotable_decision({"decision": "reject"}) is False
+
+
 def test_verdict_watches_when_evidence_incomplete():
     # 缺 p_value → insufficient_n → watch，不是 fail-open
     row = _row("c1")

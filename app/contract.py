@@ -1,6 +1,6 @@
 """命令面唯一真相（09-app-storage.md §2.2 / §2.4 / §4）。
 
-19 条命令在此**只声明元数据**：mutation 等级、是否产 Ticket、最大退出码、
+21 条命令在此**只声明元数据**：mutation 等级、是否产 Ticket、最大退出码、
 `data` 顶层键、参数 schema（字段名）。真正的执行在 `cli/<命令>.py`，
 渲染在 `render/`。任何层想知道「某命令是否写账本」「是否该弹 --yes」，
 只读这里，不读散落在 CLI 里的字面量。
@@ -30,11 +30,11 @@ CONFIRM_REQUIRED = frozenset({WRITES_LEDGER})
 
 # 核心五条：S0 冻结，只依赖 plan + ticket（09 §2.2）
 CORE_COMMANDS: tuple[str, ...] = ("run", "station", "explain", "inspect", "stations")
-# 业务十四条：S1 起逐步、S7 齐，快照/复盘后补；每条建立在核心五条之上，不新增执行语义
+# 业务十六条：S1 起逐步、S7 齐，快照/复盘后补；每条建立在核心五条之上，不新增执行语义
 BUSINESS_COMMANDS: tuple[str, ...] = (
     "doctor", "estimate", "fetch", "pipeline", "factors", "backtest",
     "evaluate", "promote", "factor_db", "holdout", "certify", "reconcile",
-    "snapshot", "replay", "vision",
+    "snapshot", "replay", "vision", "scorecard",
 )
 ALL_COMMANDS: tuple[str, ...] = CORE_COMMANDS + BUSINESS_COMMANDS
 # experiment 是 run 的旧名，保留一个版本用于迁移（09 §2.2）
@@ -105,7 +105,8 @@ def _specs() -> dict[str, CommandSpec]:
          ("limit", "status"), True),
         ("backtest", frozenset({READ_ONLY}), False, 3, ("summary",), (), False),
         ("evaluate", frozenset({READ_ONLY}), False, 2, ("evaluation",), (), False),
-        ("promote", F_L, False, 3, ("promotion",),
+        ("promote", F_L, False, 3,
+         ("promoted", "skipped", "counts", "evidence_grade"),
          ("run_id", "candidate", "min_grade", "yes"), True),
         ("factor_db", frozenset({WRITES_FACTS}), False, 3, ("entries",),
          ("retire", "note", "yes"), True),
@@ -135,6 +136,11 @@ def _specs() -> dict[str, CommandSpec]:
           "scan_end", "min_days", "write_symbol_set", "datasets", "exchange",
           "market", "timeframe", "proxy", "timeout", "workers", "revise"), True),
     ]
+    rows.append((
+        "scorecard", frozenset({READ_ONLY}), False, 2,
+        ("schema", "profile", "status", "eligible_candidates", "layers", "candidates"),
+        ("run_id", "candidate", "full"), True,
+    ))
     return {r[0]: CommandSpec(*r) for r in rows}
 
 

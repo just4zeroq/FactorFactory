@@ -101,10 +101,11 @@ def _plan_symbols(root: Path, plan: dict[str, Any]) -> tuple[str, list[str]] | N
     path = Layout(root).symbol_sets
     if not path.exists():
         return None
-    import json
-    try:
-        table = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    # 复用严格加载器：坏掉的符号集表在 run 里会 E1004 拒绝，doctor 也必须报错，
+    # 不能静默跳过标的比对后给出"体检通过"——那是同一坏文件的两种相反结论。
+    from .common import load_json_dict
+    table = load_json_dict(path, code="E1004", label="symbol_sets.json")
+    if table is None:
         return None
     members = (table.get("sets") or table).get(name)
     if isinstance(members, dict):

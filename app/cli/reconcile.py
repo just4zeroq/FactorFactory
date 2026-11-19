@@ -42,11 +42,23 @@ def _derived_ref_fields(capability: str) -> frozenset[str]:
     落成对象。panel_ref / score_ref / weights_ref 这类原生 ref 是
     array_digest/对象身份，设计上就没有文件——把它们当对象核对是误报。
     """
-    try:
-        from capability.params import schema_for
-        outputs = schema_for(capability).get("outputs") or {}
-    except Exception:  # noqa: BLE001 - 注册表不可读时不误报，按空处理
+    # 空能力名 = 这个 station 本来就没有能力映射（如纯记账站），正常跳过。
+    # 能力名存在但注册表读不出来 = 校验器自身故障，此时若按空处理会让对象
+    # 引用检查被静默跳过、最后还报 clean:True —— 这正是 reconcile 要抓的
+    # 「事实层不自洽」。必须抛错，不能 fail-open。
+    if not capability:
         return frozenset()
+    from capability.params import schema_for
+    from contracts.errors import E3003, FlowError
+    try:
+        outputs = schema_for(capability).get("outputs") or {}
+    except Exception as exc:
+        raise FlowError(
+            E3003, f"能力 {capability!r} 的 schema 不可读，无法核对对象引用",
+            path="reconcile.registry",
+            context={"error": f"{type(exc).__name__}: {exc}"},
+            hint="注册表损坏时核对结论无意义；修复后重跑，不得按空跳过",
+        ) from exc
     native_refs = {k for k, v in outputs.items()
                    if v == "str" and str(k).endswith("_ref")}
     derived = {

@@ -20,12 +20,13 @@ from contracts.errors import E1004, E1020, FlowError
 
 # ---------------------------------------------------------------- 命令面
 def test_20_commands_declared():
-    # S6 新增 reconcile（17）；快照管理 snapshot（18）；复盘 replay（19）；
-    # 全市场日 K 发现/筛选 vision（20）
+    # 核心 5 + 业务 16（vision 20、scorecard 21）；scorecard 是只读评分卡命令
     assert len(C.CORE_COMMANDS) == 5
-    assert len(C.BUSINESS_COMMANDS) == 15
-    assert len(C.ALL_COMMANDS) == 20
+    assert len(C.BUSINESS_COMMANDS) == 16
+    assert len(C.ALL_COMMANDS) == 21
     assert set(C.COMMANDS) == set(C.ALL_COMMANDS)
+    assert C.get("scorecard").mutation == frozenset({C.READ_ONLY})
+    assert C.get("scorecard").produces_ticket is False
 
 
 def test_each_command_has_mutation_ticket_exit():

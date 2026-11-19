@@ -2,7 +2,8 @@
 
 三条规则：
 
-1. **只认裁决结果**：能不能入库由 Verdict 的 `decision` 决定（`pass` / `watch`），
+1. **只认裁决结果**：能不能入库由 Verdict 的唯一判定 `promotable_decision` 决定
+   （`pass` 或已检验的 `watch`；`insufficient_n` 的 watch 没检验过，不得晋升），
    不由调用方「我觉得这个不错」决定。`--candidate` 只能**缩小**范围，不能把
    `reject` 的候选拉进库——那等于绕过唯一裁判。
 2. **表达式必须来自 Search 产物**：按 `candidate_id` join。库里没有表达式就
@@ -19,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.contract import require_confirmation
+from capability.ops.verdict import promotable_decision as _promotable
 from contracts.errors import E1008, E3003, FlowError
 from facilities.clock import Clock
 from storage.catalog import Catalog, read_ticket
@@ -27,7 +29,6 @@ from runtime.store import resolve_data_root
 
 from .common import envelope_ok
 
-_PROMOTABLE = frozenset({"pass", "watch"})
 _GRADES = ("any", "out_of_sample", "in_sample")
 
 
@@ -60,6 +61,22 @@ def cmd_promote(args: Any) -> dict[str, Any]:
             "counts": {"candidates": 0, "promoted": 0, "already": 0, "skipped": 0},
             "evidence_grade": grade, "reason": "not_out_of_sample",
         })
+
+    # 预注册评分卡闸门：档位在 plan.evaluation 冻结且未被覆盖时，scorecard 的
+    # 晋升资格与 verdict 并列成为必要条件——docs/18 的「防指标购物」才真正落地。
+    # 历史 run 没声明 evaluation（或事后改过阈值）时档位未锁，保留 verdict-only
+    # 行为并显式告警，不静默放行也不追溯拒绝旧结论。
+    from services.evaluation import build_scorecard
+    card = build_scorecard(info)
+    profile = card["profile"]
+    scorecard_gate = bool(profile.get("locked") and profile.get("promotable"))
+    eligible_ids = set(card["eligible_candidates"])
+    promote_warnings: list[str] = []
+    if not scorecard_gate:
+        promote_warnings.append(
+            "评价档位未在 plan 中冻结或阈值被覆盖；scorecard 不具晋升资格，"
+            "本次仅按 verdict 放行（docs/18 要求 run 前预注册）"
+        )
 
     verdict = payloads.get("Verdict") or {}
     evidence = payloads.get("Evidence") or {}
@@ -116,8 +133,14 @@ def cmd_promote(args: Any) -> dict[str, Any]:
         if wanted is not None and cid not in wanted:
             skipped.append({"factor_id": cid, "reason": "not_selected"})
             continue
-        if decision not in _PROMOTABLE:
-            skipped.append({"factor_id": cid, "reason": f"decision:{decision}"})
+        if not _promotable(row):
+            reason = "insufficient_n" if "insufficient_n" in {
+                str(r) for r in (row.get("reason_codes") or [])
+            } else f"decision:{decision}"
+            skipped.append({"factor_id": cid, "reason": reason})
+            continue
+        if scorecard_gate and cid not in eligible_ids:
+            skipped.append({"factor_id": cid, "reason": "scorecard_not_eligible"})
             continue
         source = ast_by_id.get(cid)
         if source is None or not isinstance(source.get("payload"), dict) \
@@ -174,4 +197,5 @@ def cmd_promote(args: Any) -> dict[str, Any]:
                    "already": already, "skipped": len(skipped) - already},
         "evidence_grade": grade,
         "catalog_total": catalog.count(),
-    })
+        "scorecard_gate": scorecard_gate,
+    }, warnings=promote_warnings)

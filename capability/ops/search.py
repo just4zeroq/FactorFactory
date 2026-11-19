@@ -89,6 +89,23 @@ def _algorithm_runs(params: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]
     return [(str(params.get("algorithm", "gp_symbolic")), dict(params))]
 
 
+def _require_single_algorithm(params: Mapping[str, Any]) -> None:
+    """门面 `fit`/`generate` 只认扁平 `params.algorithm`（单算法）。
+
+    `build` 用 `params.algorithms`（列表、多算法共享一次计数）。两者曾各认
+    一套：把多算法计划喂给门面，它只按 `algorithm` 跑一遍，其余静默消失，
+    结果却像"多算法搜索"。显式拒绝，别让两种形状在同一函数里假装兼容。
+    """
+    if isinstance(params.get("algorithms"), list):
+        raise FlowError(
+            E1004,
+            "search.fit/generate 是单算法门面，不接受 params.algorithms（多算法请走 build）",
+            path="search.params.algorithms",
+            hint="多算法的计数与去重由 build 的 _algorithm_runs 统一处理；门面只服务"
+                 "单算法的四方法契约调用",
+        )
+
+
 def fit(ctx, params, seed):
     """契约四方法之一：拟合阶段（stateful 算法才有意义）。
 
@@ -99,32 +116,8 @@ def fit(ctx, params, seed):
     无状态算法（`random_expression`）的 fit 是空操作，返回显式标记而不是
     假装拟合过 —— 否则 generate 会去找一份不存在的 `final_genes`。
     """
-    # 门面只处理**单算法**：`fit` / `generate` 的参数形状是 `params.algorithm`
-    # （扁平），而 `build` 用 `params.algorithms`（列表、多算法共享一次计数）。
-    # 两者曾各认一套：把多算法计划喂给门面，它只会按 `algorithm`（缺省
-    # gp_symbolic）跑一遍，其余算法静默消失——没有报错、没有日志，结果看起来
-    # 像"多算法搜索"。这里显式拒绝，别让两种形状在同一个函数里假装兼容。
-    if isinstance(params.get("algorithms"), list):
-        raise FlowError(
-            E1004,
-            "search.fit/generate 是单算法门面，不接受 params.algorithms（多算法请走 build）",
-            path="search.params.algorithms",
-            hint="多算法的计数与去重由 build 的 _algorithm_runs 统一处理；门面只服务"
-                 "单算法的四方法契约调用",
-        )
-    # 门面只处理**单算法**：`fit` / `generate` 的参数形状是 `params.algorithm`
-    # （扁平），而 `build` 用 `params.algorithms`（列表、多算法共享一次计数）。
-    # 两者曾各认一套：把多算法计划喂给门面，它只会按 `algorithm`（缺省
-    # gp_symbolic）跑一遍，其余算法静默消失——没有报错、没有日志，结果看起来
-    # 像"多算法搜索"。这里显式拒绝，别让两种形状在同一个函数里假装兼容。
-    if isinstance(params.get("algorithms"), list):
-        raise FlowError(
-            E1004,
-            "search.fit/generate 是单算法门面，不接受 params.algorithms（多算法请走 build）",
-            path="search.params.algorithms",
-            hint="多算法的计数与去重由 build 的 _algorithm_runs 统一处理；门面只服务"
-                 "单算法的四方法契约调用",
-        )
+    _require_single_algorithm(params)
+    _require_single_algorithm(params)
     from capability.mining import GPConfig, generate_gp
     algorithm = str(params.get("algorithm", "gp_symbolic"))
     if algorithm != "gp_symbolic":
@@ -164,32 +157,8 @@ def generate(view, params, seed, fitted_state):
     与 fit 分叉（review P1）。fitted_state 缺失时退化为一次性随机种群并显式
     标记，不冒充"接着 fit 的结果"。
     """
-    # 门面只处理**单算法**：`fit` / `generate` 的参数形状是 `params.algorithm`
-    # （扁平），而 `build` 用 `params.algorithms`（列表、多算法共享一次计数）。
-    # 两者曾各认一套：把多算法计划喂给门面，它只会按 `algorithm`（缺省
-    # gp_symbolic）跑一遍，其余算法静默消失——没有报错、没有日志，结果看起来
-    # 像"多算法搜索"。这里显式拒绝，别让两种形状在同一个函数里假装兼容。
-    if isinstance(params.get("algorithms"), list):
-        raise FlowError(
-            E1004,
-            "search.fit/generate 是单算法门面，不接受 params.algorithms（多算法请走 build）",
-            path="search.params.algorithms",
-            hint="多算法的计数与去重由 build 的 _algorithm_runs 统一处理；门面只服务"
-                 "单算法的四方法契约调用",
-        )
-    # 门面只处理**单算法**：`fit` / `generate` 的参数形状是 `params.algorithm`
-    # （扁平），而 `build` 用 `params.algorithms`（列表、多算法共享一次计数）。
-    # 两者曾各认一套：把多算法计划喂给门面，它只会按 `algorithm`（缺省
-    # gp_symbolic）跑一遍，其余算法静默消失——没有报错、没有日志，结果看起来
-    # 像"多算法搜索"。这里显式拒绝，别让两种形状在同一个函数里假装兼容。
-    if isinstance(params.get("algorithms"), list):
-        raise FlowError(
-            E1004,
-            "search.fit/generate 是单算法门面，不接受 params.algorithms（多算法请走 build）",
-            path="search.params.algorithms",
-            hint="多算法的计数与去重由 build 的 _algorithm_runs 统一处理；门面只服务"
-                 "单算法的四方法契约调用",
-        )
+    _require_single_algorithm(params)
+    _require_single_algorithm(params)
     from capability.mining import GPConfig, generate_gp
     impl = implementation_defaults("search")
     fields = tuple(view.get("fields", ())) if isinstance(view, Mapping) else ()

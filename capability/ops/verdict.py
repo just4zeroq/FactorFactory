@@ -44,6 +44,27 @@ _SOFT_REASONS = frozenset({"insufficient_n", "redundant"})
 _REQUIRED_METRICS = ("hac_t", "p_value", "cost_adj_return")
 
 
+def promotable_decision(row: Mapping[str, Any]) -> bool:
+    """裁决是否允许**晋升入库**（promote 的唯一判吿）。
+
+    `watch` 是"不下结论"，不是一个通过章。两种软原因里：
+    - `redundant`（检验过、只是不独立）仍可晋升——它是真信号；
+    - `insufficient_n`（Stage A 没过或缺统计量，**根本没检验**）不得晋升——
+      让它带着 OOS 证书入库，等于绕过唯一裁判（r1/r2 单名押注的教训）。
+
+    边界：combine / certify / capability_bridge 仍按 `{"pass", "watch"}` 放行，
+    因为它们只是**生成 OOS 证据**的中间工位，不是入库闸门；弱 watch 进组合
+    是编排层的合法选择（端到端测试靠它跑通 S4 尾链）。真正的入库防线有两道：
+    预注册评分卡（要求 decision=pass 且全档绿）与本函数（历史 run 未锁档时的
+    兜底）。不得把本函数下放到中间工位，否则弱信号连证据都生成不了。
+    """
+    if str(row.get("decision", "")) != "pass" and \
+            str(row.get("decision", "")) != "watch":
+        return False
+    reasons = row.get("reason_codes") or ()
+    return "insufficient_n" not in {str(r) for r in reasons}
+
+
 def _is_int(value: Any) -> bool:
     return isinstance(value, (int, np.integer)) and not isinstance(value, bool)
 
