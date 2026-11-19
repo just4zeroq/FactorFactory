@@ -120,6 +120,8 @@
     "portfolio": {
       "type": "block", "required": false, "keys": {
         "combiner": { "type": "enum", "values": ["fixed_ridge", "equal_weight", "score_weighted"], "required": true },
+        "orthogonalise": { "type": "enum", "values": ["none", "symmetric"], "required": false, "doc": "组合域正交化：none 不处理；symmetric 为 Löwdin 对称正交化" },
+        "corr_max": { "type": "float", "gt": 0, "le": 1, "required": false, "doc": "fit 段相关性上限，超过的候选按 |fit IC| 贪心剔除" },
         "window": {
           "type": "block", "keys": {
             "fit": { "type": "interval", "required": true },

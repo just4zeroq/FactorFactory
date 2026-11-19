@@ -290,7 +290,7 @@ plan: missing_datasets=[], missing_symbol_count=0
 | 命令 | 作用 | 数据源 |
 |---|---|---|
 | `universe` | 交易对元数据（含**已下架**），并回填首末 bar、算上下架状态 | ccxt `load_markets` |
-| `market-init` | 按日归档初始化/补齐 K 线、逐笔、盘口等原始行情 | data vision 日归档 |
+| `market-init` | 初始化/补齐 K 线、逐笔、盘口等原始行情（优先月度） | data vision 归档 |
 | `market-update` | 每日增量补数（含资金费率、OI） | ccxt 历史接口 |
 | `sync` | 全市场历史落到 L0 | 币安备份站月度归档 |
 | `pool` | 由 L0 日 K 算上市天数/ADV/覆盖率，生成挖掘币池 | L0 本地计算 |
@@ -312,22 +312,22 @@ python -m app.data_cli universe --exchange-market um --exclude-stable --proxy ht
 
 ### 获取 K 线（四种 K 线 + 逐笔 + 盘口）
 
-历史初始化走日归档，**带 `--timeframe`**（周期是归档 URL 的一部分）：
+历史初始化**优先走月度归档**——一个月一个 zip（含整月），请求量比逐日下载少约 30 倍。四类 K 线、逐笔（trades/aggTrades）走月度；无月归档的（bookDepth/metrics/bookTicker）自动回落日归档。K 线**带 `--timeframe`**（周期是归档 URL 的一部分）：
 
 ```bash
-# 四类 K 线：klines / indexPriceKlines / markPriceKlines / premiumIndexKlines
+# 四类 K 线：klines / indexPriceKlines / markPriceKlines / premiumIndexKlines（月度）
 python -m app.data_cli market-init \
   --datasets klines,indexPriceKlines,markPriceKlines,premiumIndexKlines \
   --symbols "BTC/USDT:USDT,ETH/USDT:USDT" \
   --start 2024-01-01 --end 2026-11-01 \
   --timeframe 1d --market futures
 
-# 逐笔与盘口快照类：trades / aggTrades / bookDepth / bookTicker / metrics
+# 逐笔月度 + 仅日归档的盘口类自动回落
 python -m app.data_cli market-init --datasets trades,bookDepth \
   --set crypto_all --start 2026-10-01 --end 2026-10-31
 ```
 
-`--symbols` 给 ccxt 符号、`--set` 从 universe 的标的集取名，二选一。`--limit N` 只处理前 N 个标的（分批用）；默认 append-only，`--revise` 才覆盖同时间戳的行。归档是稀疏的（如 `bookTicker` 只有新币/活动期才有），某天没有会记 `missing`，不算失败。
+`--start/--end` 仍用 `YYYY-MM-DD`，月度归档按范围换算成整月（首月/末月按整月拉，落盘后按时间戳去重）。`--symbols` 给 ccxt 符号、`--set` 从 universe 的标的集取名，二选一。`--limit N` 只处理前 N 个标的（分批用）；默认 append-only，`--revise` 才覆盖同时间戳的行。归档是稀疏的（如 `bookTicker` 只有新币/活动期才有），某段没有会记 `missing`，不算失败。
 
 每日增量用 ccxt 补最近几天：
 
@@ -567,11 +567,17 @@ python -m app.cli factors --status active
 
 | 写法 | 含义 |
 |---|---|
-| `mom20` | 内置因子池（26 个之一，见下） |
+| `mom20` | 内置因子池（33 个之一，见下） |
 | `db:<name>` / `db:<factor_id>` | 因子库里指定的那条 |
 | `db:*` | 库里全部 `active` |
 
-内置因子池（26 个）：`mom5` `mom20` `mom60` `rev5` `rev1` `rv20` `hl_range` `vwap_gap` `vol_ratio` `funding_carry` `funding_carry14` `funding_carry21` `funding_carry_rank7` `oi_change20` `basis_carry` `low_vol20` `low_vol60` `funding_lowvol14` `funding_volratio` `funding_volratio14` `funding_volratio21` `funding_basis7` `funding_volratio_basis` `funding_vol_interaction` `funding14_vol_interaction` `funding14_vol_interaction_scaled`。
+内置因子池（33 个）：
+- 纯 K 线（16）：`mom5` `mom20` `mom60` `rev5` `rev1` `rv20` `hl_range` `vwap_gap` `vol_ratio` `low_vol20` `low_vol60` `ts_efficiency10` `range_efficiency` `tsmom_60_5` `vol_price_diverge` `illiquidity`
+- 资金费 / 基差 / OI（17）：`funding_carry` `funding_carry14` `funding_carry21` `funding_carry_rank7` `funding_delta` `funding_lowvol14` `funding_volratio` `funding_volratio14` `funding_volratio21` `funding_basis7` `funding_volratio_basis` `funding_vol_interaction` `funding14_vol_interaction` `funding14_vol_interaction_scaled` `basis_carry` `basis_delta` `oi_change20`
+
+> ⚠️ **评价口径警示**：`evidence.params.prefilter.return_transform` 的 `rank` / `rank_scaled` / `winsor` 仅供诊断，
+> **不得用于正式 verdict 的成本闸**。真实交易赚算术收益；rank 口径会把「rank IC 正但算术均值亏」的
+> 厚尾因子（如 `low_vol20`、`ts_efficiency10`）美化成 gross 正，造成假阳性。正式裁决只用缺省的 `raw`。
 
 两种被排除的情况都会**留痕**（进 `Search.payload.prior_skipped`），不是静默丢弃：
 

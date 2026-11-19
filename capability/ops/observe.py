@@ -178,7 +178,8 @@ def _exposure(exposures: Mapping[str, Any], cid: str, shape: tuple[int, int],
 def _longshort(values: np.ndarray, valid: np.ndarray, label_raw: np.ndarray,
                label_valid: np.ndarray, horizon_bars: int = 1,
                rebalance: int = 1,
-               quantile: float | None = None) -> tuple[float, float, float, float, int, np.ndarray]:
+               quantile: float | None = None,
+               return_transform: str = "raw") -> tuple[float, float, float, float, int, np.ndarray]:
     """简化的分位多空：每再平衡期取暴露截面前/后 q 分位（缺省 1/3）等权，算换手、毛收益与毛 Sharpe。
 
     S3 只用它给 Stage A 一个可比的换手/毛收益口径；净成本（含费用/滑点/资金费）
@@ -264,7 +265,59 @@ def _longshort(values: np.ndarray, valid: np.ndarray, label_raw: np.ndarray,
     turnover = 0.5 * float(np.abs(np.diff(weights, axis=0)).sum())
     # 多空组合每期收益：t 期持仓乘 t 期标签收益（成交延迟已由标签的 entry
     # offset 表达，同索引 PIT；见 docstring「对齐」）。
-    ls = np.sum(weights * label_raw, axis=1)
+    # 多空组合的收益标的。默认 raw（历史口径，保持不变）。
+    # `rank`：逐截面把 label_raw 替换成其横截面百分位（中心化到 [-0.5, 0.5]）。
+    # 动机：rank IC 与算术均值收益在厚尾资产上会系统性分歧——某个高分位组只要
+    # 右偏（少数暴涨），rank IC 高但均值收益可能为负，导致「信号对、组合亏」。
+    # 用 rank 收益评价组合，让「信号→钱」与 IC 同一量纲，消除这一分歧。
+    # 但 rank 无量纲（±0.5），与收益率量纲的成本不可直接相减——DSR 排序不受
+    # 影响（成本占比小），绝对净收益不可信。
+    # `rank_scaled`：在 rank 基础上再乘当期截面鲁棒 σ（1.4826·MAD，×2 归一），
+    # 恢复收益率量纲，使 gross_return 与 cost 数值上同尺度。
+    #
+    # ⚠️ 实证警告（2026-11-19）：rank / rank_scaled **不得用于正式 verdict 成本闸**。
+    # 真实交易赚的是算术收益；rank 口径把「rank IC 正但算术均值亏」的因子
+    # （厚尾下的低波/效率类）美化成 gross 正，是假阳性源。实测 low_vol20 在
+    # raw 下 gross=-0.000186（OOS -33%），rank_scaled 下却 +0.003。
+    # 这些变换只可用于诊断「IC 与算术收益分歧」，不可作为放行因子的依据。
+    # 只变换用于组合评价的副本；喂给 DSR 的 ls 同样来自它，保证同源。
+    ls_label = label_raw
+    _KNOWN_TRANSFORMS = ("raw", "rank", "winsor", "rank_scaled")
+    if return_transform not in _KNOWN_TRANSFORMS:
+        raise FlowError(
+            E1004, f"未知的 return_transform={return_transform!r}",
+            path="observe.params.prefilter.return_transform",
+            hint=f"可用 {' / '.join(_KNOWN_TRANSFORMS)}",
+        )
+    if return_transform != "raw":
+        ls_label = np.array(label_raw, dtype="float64", copy=True)
+        for t in range(t_len):
+            row_ok = label_valid[t] & np.isfinite(ls_label[t])
+            if row_ok.sum() < 2:
+                ls_label[t, row_ok] = 0.0
+                continue
+            v = ls_label[t, row_ok]
+            if return_transform in ("rank", "rank_scaled"):
+                ranks = np.argsort(np.argsort(v)).astype("float64")
+                centred = ranks / max(1, v.size - 1) - 0.5
+                if return_transform == "rank_scaled":
+                    # 恢复收益率量纲：中心化秩 (±0.5) × 当期截面收益尺度。
+                    # 尺度用截面的鲁棒标准差 1.4826·MAD（对厚尾不敏感；正态下
+                    # 与 std 一致），再乘 2 让满多空的理论跨度≈1 个截面 σ。
+                    # 这样 gross_return 与成本回到同一量纲、可直接相减，
+                    # 同时保留 rank 对极端值的免疫（不用原始收益做权重）。
+                    med = float(np.median(v))
+                    mad = float(np.median(np.abs(v - med)))
+                    scale = 1.4826 * mad
+                    if not np.isfinite(scale) or scale <= 0.0:
+                        scale = float(np.std(v))
+                    ls_label[t, row_ok] = centred * 2.0 * scale
+                else:
+                    ls_label[t, row_ok] = centred
+            else:  # winsor：截面 5% 分位截尾，保留均值量纲、压掉极端尾部
+                lo, hi = np.percentile(v, [5, 95])
+                ls_label[t, row_ok] = np.clip(v, lo, hi)
+    ls = np.sum(weights * ls_label, axis=1)
     ls = ls[np.isfinite(ls)]
     if ls.size < 2:
         return turnover, 0.0, 0.0, 0.0, 0, ls
@@ -608,6 +661,7 @@ def build(call) -> dict:
     max_turn = float(prefilter.get("max_turnover", 0.0))  # 0 = 不设限
     min_abs_ic = float(prefilter.get("min_abs_ic", 0.0))
     quantile = float(prefilter.get("quantile", 1.0 / 3.0))
+    return_transform = str(prefilter.get("return_transform", "raw"))
     dedup_cfg = _dedup_config(params)
     groups, wants_groups = _group_config(params, metrics_req)
     decay_h = _decay_config(params, metrics_req)
@@ -694,7 +748,8 @@ def build(call) -> dict:
         rank_ic = nanmean(ic)  # 逐行 spearman 已是 rank IC；与 ic 同源，method_id 相同
         hit_rate = float(np.mean(ic[np.isfinite(ic)] > 0)) if np.isfinite(ic).any() else 0.0
         turnover, gross_sharpe, gross_return, sr_per_period, n_periods, ls = _longshort(
-            values, valid, raw, label_valid, horizon_bars, rebalance, quantile)
+            values, valid, raw, label_valid, horizon_bars, rebalance, quantile,
+            return_transform)
         # DSR 的偏度/峰度必须来自**同一条**多空收益序列（与 `sr` 同源）：
         # 换个口径填这两个数，等于在方差修正项里混用两个分布。
         net_skew, net_kurt = sample_shape(ls)

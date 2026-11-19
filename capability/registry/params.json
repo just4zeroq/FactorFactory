@@ -412,6 +412,12 @@
               "gt": 0,
               "le": 0.5,
               "doc": "分位多空每边取多少比例的标的；缺省三分之一，与历史口径逐位一致"
+            },
+            "return_transform": {
+              "type": "enum",
+              "required": false,
+              "values": ["raw", "rank", "winsor", "rank_scaled"],
+              "doc": "组合评价用的收益口径。⚠️仅 raw 可用于正式 verdict 成本闸：真实交易赚算术收益，rank/rank_scaled 的 gross 是评价口径美化的假阳性源（rank IC 正但真实组合亏钱的因子会被误放行）。raw=原始算术收益（缺省，唯一可用于成本闸口径）；rank=逐截面百分位（无量纲，仅诊断）；winsor=截面5%截尾（仅诊断）；rank_scaled=中心化秩×截面鲁棒σ（恢复量纲但仍是秩的尺度、非真实算术收益，仅诊断）。实测：low_vol20 raw gross=-0.000186 而 rank_scaled +0.003，OOS 真实为负。"
             }
           }
         },
