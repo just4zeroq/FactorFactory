@@ -22,7 +22,6 @@ import pandas as pd
 import pytest
 
 from contracts.errors import E1004, E4002, E4003, FlowError
-from upstream import fetch as fetcher
 from upstream import store
 
 NOW = datetime(2026, 11, 17, tzinfo=timezone.utc)
@@ -207,46 +206,6 @@ def test_spot_market_rejects_futures_only_datasets(dataset):
 def test_unknown_market_is_rejected():
     with pytest.raises(FlowError) as exc:
         store.require_market("swap")
-    assert exc.value.code == E1004
-
-
-# ---------------------------------------------------------------- V4 导入
-def test_import_v4_normalises_date_column_and_timezone(tmp_path):
-    """V4 落盘是 naive UTC + `date` 列；导入必须转成 UTC 感知的 timestamp。"""
-    v4 = tmp_path / "v4"
-    (v4 / "futures").mkdir(parents=True)
-    source = pd.DataFrame({
-        "date": pd.date_range("2026-01-01", periods=3),  # naive
-        "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10.0,
-    })
-    source.to_feather(v4 / "futures" / "BTC_USDT_USDT-1d-futures.feather")
-
-    report = fetcher.import_v4(
-        tmp_path / "root", v4, ["ohlcv"],
-        exchange="binanceusdm", market="futures",
-        symbols=["BTC/USDT:USDT"], timeframe="1d",
-    )[0]
-    assert report.symbols == 1 and report.rows_added == 3
-    ds = store.read_dataset(tmp_path / "root", "ohlcv", "binanceusdm", "futures",
-                            symbols=["BTC/USDT:USDT"], timeframe="1d", now=NOW)
-    assert ds.rows == 3
-    assert all(stamp.tzinfo is not None for stamp in ds.columns[store.TIMESTAMP_COL])
-
-
-def test_import_v4_requires_explicit_symbols(tmp_path):
-    """`1000PEPE_USDT_USDT` 反解需要猜段数：猜错会把两个合约并成一个。"""
-    with pytest.raises(FlowError) as exc:
-        fetcher.import_v4(tmp_path, tmp_path, ["ohlcv"],
-                          exchange="binanceusdm", market="futures")
-    assert exc.value.code == E1004
-
-
-def test_import_v4_rejects_spot_with_derivative_symbols(tmp_path):
-    """现货目录 + 永续符号：必须在写盘之前失败，不能逐标的 skip 完还报成功。"""
-    with pytest.raises(FlowError) as exc:
-        fetcher.import_v4(tmp_path, tmp_path, ["ohlcv"],
-                          exchange="binance", market="spot",
-                          symbols=["BTC/USDT:USDT"], timeframe="1d")
     assert exc.value.code == E1004
 
 

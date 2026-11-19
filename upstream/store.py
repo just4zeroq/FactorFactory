@@ -264,7 +264,7 @@ def _normalise(
         legacy = " 出现 date 列" if "date" in frame.columns else ""
         raise FlowError(
             E1014, f"{path.name} 缺列 {missing}{legacy}", path=str(path),
-            hint="统一列名 timestamp + UTC 时区；V4 的 feather 用 flow fetch --from-v4 导入",
+            hint="统一列名 timestamp + UTC 时区；缺列请用 flow fetch 重新采集",
         )
     out = frame.copy()
     if SYMBOL_COL not in out.columns:

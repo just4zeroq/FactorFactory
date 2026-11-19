@@ -208,7 +208,7 @@ python -m app.cli vision fetch  --min-days 1200
   （含每标的 `first_month` / `days` / 筛选条件，可复算），`--write-symbol-set` 同时写标的集供 plan 引用。
 - `fetch`：从筛中清单按最早 `first_month` 起下载 `ohlcv` + `funding` 到挖掘数据根。
 
-也可以对已知标的直接用 `fetch --from-binance-vision`（与 `--from-v4` 互斥）：
+也可以对已知标的直接用 `fetch --from-binance-vision`：
 
 ```bash
 python -m app.cli fetch --datasets ohlcv,funding --symbols "BTC/USDT:USDT,ETH/USDT:USDT" \
@@ -280,6 +280,96 @@ plan: missing_datasets=[], missing_symbol_count=0
 ```
 
 `open_interest` 这种短历史是**数据源事实**，不是采集失败——但它会让 `oi_change20` 类因子在长面板上不可观测，`Evidence` 会给出 `unobservable` 并留痕。
+
+## 1.6 数据基座工具 `data_cli`（可选）
+
+`python -m app.data_cli` 是**独立于主流程**的 L0 工具：把交易所**全部币种**的行情原样落到 `<数据根>/base/raw/`，再从 L0 算出挖掘用的币池。它和上面 1.3–1.5 的 `app.cli` 是两套东西——`app.cli` 直接采挖掘用的窄表（L1），`data_cli` 先建一份**不过滤、不裁剪**的原始基座（L0），按需再装配到 L1。
+
+**完全可选**：你可以不用它，自己维护 `schemas/symbol_sets.json`；主流程的 `fetch` / `run` 不感知它。取数统一走 `services.market_data` 三原语（只取数不落盘，本工具负责落盘），所有命令都支持 `--proxy`。
+
+| 命令 | 作用 | 数据源 |
+|---|---|---|
+| `universe` | 交易对元数据（含**已下架**），并回填首末 bar、算上下架状态 | ccxt `load_markets` |
+| `market-init` | 按日归档初始化/补齐 K 线、逐笔、盘口等原始行情 | data vision 日归档 |
+| `market-update` | 每日增量补数（含资金费率、OI） | ccxt 历史接口 |
+| `sync` | 全市场历史落到 L0 | 币安备份站月度归档 |
+| `pool` | 由 L0 日 K 算上市天数/ADV/覆盖率，生成挖掘币池 | L0 本地计算 |
+| `l1` | 把币池数据从 L0 装配到 L1 | L0 → L1 |
+
+### 获取元数据（含已下架）
+
+```bash
+python -m app.data_cli universe --exchange-market um --proxy http://127.0.0.1:7890
+```
+
+`--exchange-market` 取 `um`（U 本位永续，默认）/ `cm`（币本位）/ `spot`。元数据走 ccxt `load_markets`，读 `market["info"]` 里的 `contractStatus` / `onboardDate` 等**原始字段**判定下架——不是只用 ccxt 归一化后那个粗粒度 `active`。接口失败默认回退上次快照并告警，`--refresh` 强制不回退。加 `--probe` 会探测每个标的备份站最早归档月（全市场约 38 分钟）。
+
+默认保留全量交易对（含稳定币）。加 `--exclude-stable` 会在落盘前剔除稳定币交易对（口径与 `pool` 一致，按归一化后的 `asset_class=stable`；包含 um 的 `USDC/USDT:USDT`、`USTC/USDT:USDT` 两个永续），回执里 `excluded_stable` 给出本次剔除数：
+
+```bash
+python -m app.data_cli universe --exchange-market um --exclude-stable --proxy http://127.0.0.1:7890
+```
+
+### 获取 K 线（四种 K 线 + 逐笔 + 盘口）
+
+历史初始化走日归档，**带 `--timeframe`**（周期是归档 URL 的一部分）：
+
+```bash
+# 四类 K 线：klines / indexPriceKlines / markPriceKlines / premiumIndexKlines
+python -m app.data_cli market-init \
+  --datasets klines,indexPriceKlines,markPriceKlines,premiumIndexKlines \
+  --symbols "BTC/USDT:USDT,ETH/USDT:USDT" \
+  --start 2024-01-01 --end 2026-11-01 \
+  --timeframe 1d --market futures
+
+# 逐笔与盘口快照类：trades / aggTrades / bookDepth / bookTicker / metrics
+python -m app.data_cli market-init --datasets trades,bookDepth \
+  --set crypto_all --start 2026-10-01 --end 2026-10-31
+```
+
+`--symbols` 给 ccxt 符号、`--set` 从 universe 的标的集取名，二选一。`--limit N` 只处理前 N 个标的（分批用）；默认 append-only，`--revise` 才覆盖同时间戳的行。归档是稀疏的（如 `bookTicker` 只有新币/活动期才有），某天没有会记 `missing`，不算失败。
+
+每日增量用 ccxt 补最近几天：
+
+```bash
+python -m app.data_cli market-update --datasets klines \
+  --set crypto_all --since-days 3 --timeframe 1d
+```
+
+### 获取资金费率（funding）
+
+资金费率**日归档没有**，只有月度归档（备份站）和 ccxt 历史接口两条路：
+
+```bash
+# 备份站月度归档（可回溯到 2020 年，一次一个 zip）
+python -m app.data_cli sync --datasets funding --set crypto_all \
+  --start 2020-01-01 --end 2026-11-01
+
+# 或 ccxt 每日增量补最近段（fetchFundingRateHistory，带 since 可翻页）
+python -m app.data_cli market-update --datasets funding --set crypto_all --since-days 3
+```
+
+`sync` 当前只支持 `ohlcv` / `funding`；`--start` / `--end` 缺省时取最早归档月到当前。
+
+### 获取持仓量（OI）
+
+`open_interest` **没有归档**（交易所只留约 30 天），只能走 ccxt 增量：
+
+```bash
+python -m app.data_cli market-update --datasets open_interest \
+  --set crypto_all --since-days 3
+```
+
+### 从 L0 生成币池并装配到 L1
+
+```bash
+python -m app.data_cli pool --name crypto_all --min-days 365 --min-adv 1000000
+python -m app.data_cli l1 --set crypto_all --datasets ohlcv,funding
+```
+
+`pool` 按 L0 日 K 计算上市天数、ADV 中位数、覆盖率、末根有效 bar，默认排除稳定币与僵尸标的。`l1` 按标的集从 L0 装配到挖掘数据根，`--link` 用硬链接省空间。
+
+> 数据集在两源的能力映射（哪些双源互补、哪些只有单源、funding 走月度、OI 只有 ccxt）见 `services/market_data.py` 的 `DATASET_SPECS`。
 
 ---
 
@@ -636,7 +726,7 @@ python -m app.cli estimate --plan my_plan.json --turnover 1.0
 
 | 命令 | mutation | 用途 | 关键参数 |
 |---|---|---|---|
-| `fetch` | 写供给 | 四数据集采集 | `--datasets` `--symbol-set`/`--symbols` `--exchange` `--market` `--timeframe` `--start` `--end` `--from-v4`/`--from-binance-vision` `--proxy` `--revise` `--limit` `--spot-exchange` |
+| `fetch` | 写供给 | 四数据集采集 | `--datasets` `--symbol-set`/`--symbols` `--exchange` `--market` `--timeframe` `--start` `--end` `--from-binance-vision` `--proxy` `--revise` `--limit` `--spot-exchange` |
 | `vision` | 写供给 | 全市场日 K 发现→筛选→拉齐 | 子命令 `list`/`scan`/`fetch`；`--min-days` `--write-symbol-set` `--datasets` `--proxy` |
 | `doctor` | 只读 | 供给体检 | `--plan` `--dataset` |
 | `estimate` | 只读 | 成本估算 | `--plan` `--turnover` |

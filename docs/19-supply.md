@@ -184,7 +184,7 @@ OI 的 30 天限制是交易所事实，不是实现缺陷。用它做成本建�
 | `upstream/publish.py` | 348 | 无别名、无登记，只需原子替换文件（`store._atomic_write`） |
 | `upstream/lease.py` | 233 | 单机批量研究没有多写者；append-only 让「重跑」天然幂等 |
 | `upstream/loader.py` | 101 | 它只是「读 payload 并重算指纹」的门面，`store.read_dataset` 就是这件事 |
-| `upstream/mirror.py` | 122 | 离线镜像的唯一用途是绕开断网重跑；V4 快照导入（`--from-v4`）覆盖了这个用例 |
+| `upstream/mirror.py` | 122 | 离线镜像的唯一用途是绕开断网重跑；备份站归档（`--from-binance-vision`）覆盖了这个用例 |
 | `upstream/maintlog.py` | 87 | 无版本目录，日志无处可挂 |
 | `app/cli/refresh.py` | 407 | 由 `fetch.py` 取代（`flow refresh` 命令一并删除，命令面 7 → 6） |
 

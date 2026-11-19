@@ -1,18 +1,11 @@
 """四数据集采集（19-supply.md §2）：ohlcv / funding / open_interest / basis。
 
-两条来源，同一条落盘路径：
-
-1. **交易所**（ccxt）：分页拉取，逐标的写 `store`；
-2. **V4 快照**（`--from-v4`）：把 `data/<exchange>/<market>/**.feather` 读进来，
-   列名 `date` → `timestamp`，naive 时间按 UTC 解释。V4 的事件流文件名用的是
-   `-funding_rate.feather` 后缀，映射在 `V4_STREAM_SUFFIX`，不扩散到新路径。
+来源是**交易所**（ccxt）：分页拉取，逐标的写 `store`。备份站归档走
+`upstream/binance_vision.py`，落盘路径与列契约和这里完全一致，读取侧不需要
+知道数据来自哪条通道。
 
 市场维度（spot / futures）与数据集的相容性在**连网之前**校验（`store.require_market*`）：
 现货没有资金费、没有持仓量，`basis` 的定义域也在合约侧。
-
-为什么两条都要：V4 已有 2000+ 个文件是既有事实，重下既慢又可能拿不到同样区间
-（OI 交易所只留 30 天）；而新数据只能从交易所来。两者最终都落到同一份 parquet，
-所以读取侧不需要知道数据是导入的还是现采的。
 
 时间语义按数据集分开（19-supply.md §3）：
 - bar（ohlcv / basis）：等距，`timeframe` 是身份的一部分；
@@ -31,18 +24,6 @@ import pandas as pd
 from contracts.errors import E1004, E1014, E4002, FlowError
 
 from . import store
-
-V4_COLUMN_ALIASES = {
-    "date": store.TIMESTAMP_COL,
-    "time": store.TIMESTAMP_COL,
-    "timestamp": store.TIMESTAMP_COL,
-    "fundingRate": "funding_rate",
-    "funding_rate": "funding_rate",
-    "openInterestAmount": "open_interest",
-    "openInterestValue": "open_interest",
-    "open_interest": "open_interest",
-    "basis": "basis",
-}
 
 
 @dataclass
@@ -80,16 +61,16 @@ def _window(frame: pd.DataFrame, start: datetime | None, end: datetime | None) -
 
 
 def _utc(frame: pd.DataFrame) -> pd.DataFrame:
-    """date → timestamp，naive 按 UTC 解释。
+    """把时间列归一到 UTC 感知的 `timestamp`。
 
-    V4 落盘一律 UTC 但**不带时区**。直接 `tz_localize("UTC")` 是唯一正确的解释；
-    若按本地时区解释，同一份文件在不同机器上会落到不同日期。
+    交易所返回的时间本身就是 UTC，但没有时区标记。naive 值只能按 UTC 解释：
+    按本地时区解释会让同一份数据在不同机器上落到不同日期，可复现性直接失效。
     """
-    out = frame.rename(columns={k: v for k, v in V4_COLUMN_ALIASES.items() if k in frame.columns})
+    out = frame
     if store.TIMESTAMP_COL not in out.columns:
         raise FlowError(
-            E1014, f"源文件缺时间列: {list(frame.columns)}", path="timestamp",
-            hint="只接受 date / time / timestamp 三种列名",
+            E1014, f"源数据缺时间列 {store.TIMESTAMP_COL!r}: {list(frame.columns)}",
+            path="timestamp",
         )
     stamps = out[store.TIMESTAMP_COL]
     if not pd.api.types.is_datetime64_any_dtype(stamps):
@@ -112,99 +93,13 @@ def _normalise_columns(frame: pd.DataFrame, dataset: str) -> pd.DataFrame:
     return out[wanted]
 
 
-def v4_ohlcv_path(v4_root: Path, market: str, stem: str, timeframe: str) -> Path:
-    """V4 的 ohlcv：`<v4_root>/<market>/<STEM>-<tf>-<market>.feather`。"""
-    return Path(v4_root) / market / f"{stem}-{timeframe}-{market}.feather"
-
-
-V4_STREAM_SUFFIX = {"funding": "funding_rate", "open_interest": "open_interest", "basis": "basis"}
-
-
-def v4_stream_path(v4_root: Path, market: str, stem: str, dataset: str, timeframe: str) -> Path:
-    """V4 的事件流：`<v4_root>/<market>/crypto_streams/<STEM>-<tf>-<kind>.feather`。
-
-    注意 V4 文件名里的 `-1d-` 是**假标签**：funding 文件实际存的是 4h/8h 结算事件。
-    导入时只把它当定位串，真实间隔由数据决定（store 会现算）。
-    """
-    suffix = V4_STREAM_SUFFIX[dataset]
-    return Path(v4_root) / market / "crypto_streams" / f"{stem}-{timeframe}-{suffix}.feather"
-
-
 def _target_file(root, dataset: str, exchange: str, market: str, symbol: str, timeframe: str) -> Path:
-    """落盘路径：只有 bar 数据集带 tf。V4 的定位串（`-1d-`）不能带进目标文件名。"""
+    """落盘路径：只有 bar 数据集带 tf，事件流的间隔由数据自己决定。"""
     return store.dataset_file(
         root, dataset, exchange, market, symbol,
         timeframe if dataset == store.BAR_DATASET else None,
     )
 
-
-def import_v4(
-    root: str | Path,
-    v4_root: str | Path,
-    datasets: Sequence[str],
-    *,
-    exchange: str,
-    market: str = "futures",
-    symbols: Sequence[str] | None = None,
-    timeframe: str = "1d",
-    start: datetime | None = None,
-    end: datetime | None = None,
-    revise: bool = False,
-) -> list[FetchReport]:
-    """从 V4 feather 快照导入。符号必须由调用方给出，不从文件名反推。
-
-    为什么要求符号清单：`1000PEPE_USDT_USDT` 反解成 `1000PEPE/USDT:USDT` 需要猜
-    段数，猜错就把两个不同的合约当成一个（V4 里 `1000PEPE` 与 `PEPE` 是两份数据）。
-    """
-    if not symbols:
-        raise FlowError(
-            E1004, "从 V4 导入必须给标的清单", path="symbols",
-            hint="用 --symbol-set 从 schemas/symbol_sets.json 取，或 --symbols 直接给",
-        )
-    v4 = Path(v4_root)
-    if not v4.exists():
-        raise FlowError(E4002, f"V4 数据根不存在: {v4}", path=str(v4))
-    # 市场相容在**写盘之前**拦：否则现货符号会被拿去查合约文件，逐个 no_file
-    # 之后命令仍然成功，看上去像「这几只没数据」。
-    store.require_market(market)
-    store.require_market_symbols(market, symbols)
-    for dataset in datasets:
-        store.require_market_dataset(market, dataset)
-
-    reports: list[FetchReport] = []
-    for dataset in datasets:
-        report = FetchReport(dataset=dataset, source=f"v4:{v4}")
-        by_stem = {store.file_stem(s): s for s in symbols}
-        for stem, symbol in by_stem.items():
-            if dataset == store.BAR_DATASET:
-                source = v4_ohlcv_path(v4, market, stem, timeframe)
-            else:
-                source = v4_stream_path(v4, market, stem, dataset, timeframe)
-            if not source.exists():
-                report.skipped.append({"symbol": symbol, "reason": "no_file", "path": str(source)})
-                continue
-            try:
-                frame = pd.read_feather(source)
-                frame = _normalise_columns(frame, dataset)
-            except FlowError as exc:
-                report.skipped.append({"symbol": symbol, "reason": exc.code, "detail": str(exc)})
-                continue
-            except (OSError, ValueError) as exc:
-                report.skipped.append(
-                    {"symbol": symbol, "reason": "unreadable", "detail": f"{type(exc).__name__}: {exc}"}
-                )
-                continue
-            frame = _window(frame, start, end)
-            if frame.empty:
-                report.skipped.append({"symbol": symbol, "reason": "empty_window"})
-                continue
-            target = _target_file(root, dataset, exchange, market, symbol, timeframe)
-            stats = store.upsert(target, frame, dataset, symbol=symbol, revise=revise)
-            report.symbols += 1
-            report.rows_added += stats["added"]
-            report.revised += stats["revised"]
-        reports.append(report)
-    return reports
 
 
 # ---------------------------------------------------------------- ccxt 采集
@@ -366,7 +261,4 @@ def fetch_ccxt(
     return reports
 
 
-__all__ = [
-    "FetchReport", "import_v4", "fetch_ccxt",
-    "v4_ohlcv_path", "v4_stream_path",
-]
+__all__ = ["FetchReport", "fetch_ccxt"]

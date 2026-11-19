@@ -3,10 +3,10 @@
 一条命令，两种来源，同一个落点：
 
 ```
-flow fetch --datasets ohlcv,funding --symbol-set crypto20 --exchange binanceusdm \
-           --from-v4 data/binance            # 从 V4 快照导入
 flow fetch --datasets ohlcv --symbol-set crypto20 --exchange binanceusdm \
            --start 2025-01-01 --end 2025-12-31   # 从交易所增量
+flow fetch --datasets ohlcv,funding --symbol-set crypto20 --exchange binanceusdm \
+           --from-binance-vision --start 2019-01-01 --end 2026-10-31  # 备份站月度归档
 ```
 
 没有暂存、没有版本目录、没有别名。写完就是事实：读取时现算 checksum，
@@ -103,7 +103,6 @@ def cmd_fetch(args: Any) -> dict[str, Any]:
     if start and end and start >= end:
         raise FlowError(E1004, "--start 必须早于 --end", path="range")
 
-    v4_root = getattr(args, "from_v4", None)
     from_vision = bool(getattr(args, "from_binance_vision", False))
     if from_vision:
         from upstream import binance_vision
@@ -118,12 +117,6 @@ def cmd_fetch(args: Any) -> dict[str, Any]:
             exchange=exchange, market=market, symbols=symbols, timeframe=timeframe,
             start=start, end=end, proxy=getattr(args, "proxy", None),
             revise=bool(getattr(args, "revise", False)),
-        )
-    elif v4_root:
-        reports = fetcher.import_v4(
-            data_root, v4_root, datasets,
-            exchange=exchange, market=market, symbols=symbols, timeframe=timeframe,
-            start=start, end=end, revise=bool(getattr(args, "revise", False)),
         )
     else:
         if start is None or end is None:

@@ -3,7 +3,7 @@
 为什么需要这条来源：
 - ccxt 逐个标的翻页拉历史，慢且受交易所 rate limit；备份站是官方按月的静态归档，
   一次一个 zip 就是一整个月，历史深度也更长（ohlcv/funding 可回溯到 2019 年）。
-- 它和 ccxt、V4 落到**完全相同**的 parquet 路径与列契约，读取侧无需知道数据来自哪。
+- 它和 ccxt 落到**完全相同**的 parquet 路径与列契约，读取侧无需知道数据来自哪。
 
 命名规则（已对 2020-01 的样本实测确认，见 docs）：
 - K 线：`data/futures/um/monthly/klines/<SYMBOL>/<tf>/<SYMBOL>-<tf>-<YYYY-MM>.zip`

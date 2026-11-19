@@ -84,7 +84,7 @@ def _specs() -> dict[str, CommandSpec]:
         ("fetch", frozenset({WRITES_SUPPLY}), False, 4,
          ("exchange", "market", "data_root", "datasets"),
          ("datasets", "symbols", "symbol-set", "start", "end", "timeframe",
-          "exchange", "market", "from-v4", "from-binance-vision", "proxy",
+          "exchange", "market", "from-binance-vision", "proxy",
           "revise", "limit", "spot-exchange"), True),
         ("run", frozenset({WRITES_FACTS}), True, 4,
          ("station_specs", "fingerprints", "origins_count", "parcels", "traces", "state"),

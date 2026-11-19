@@ -240,12 +240,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--timeframe", default="1d", help="只对 ohlcv 生效")
     sp.add_argument("--start", help="RFC3339；从交易所采集时必填")
     sp.add_argument("--end", help="RFC3339；从交易所采集时必填")
-    src = sp.add_mutually_exclusive_group()
-    src.add_argument("--from-v4",
-                     help="从 V4 feather 快照导入（如 data/binance）")
-    src.add_argument("--from-binance-vision", action="store_true",
-                     help="从币安公开数据备份站 data.binance.vision 下载月度归档"
-                          "（仅 ohlcv/funding；带 sha256 校验）")
+    sp.add_argument("--from-binance-vision", action="store_true",
+                    help="从币安公开数据备份站 data.binance.vision 下载月度归档"
+                         "（仅 ohlcv/funding；带 sha256 校验）")
     sp.add_argument("--proxy", help="下载代理（如 http://127.0.0.1:7890）；"
                                     "binance-vision 来源用，缺省读环境 https_proxy")
     sp.add_argument("--revise", action="store_true",
