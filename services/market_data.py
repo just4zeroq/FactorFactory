@@ -7,7 +7,8 @@
 
 - **元数据**：ccxt ``load_markets``（交易所 ``exchangeInfo`` 原始字段），
   交给 :mod:`services.exchange_metadata` 归一化；
-- **历史全量**：data.binance.vision 日归档，:mod:`upstream.vision_daily`；
+- **历史全量**：data.binance.vision 归档，优先月度（请求量少约 30 倍）、
+  无月归档的回落日归档，:mod:`upstream.vision_daily`；
 - **区间/最近段**：历史走归档，最近 ``ccxt_lag_days`` 天用 ccxt 增量补，
   :mod:`services.l0_incremental` 的取数函数。
 
@@ -102,32 +103,33 @@ class DatasetSpec:
         return self.has_vision_history and self.has_ccxt_history
 
 
-# 统一数据集注册表。vision 侧 8 类来自用户确认的日归档清单；
-# ccxt 侧能力按 4.5.93 实测（见 fetchOHLCV 家族 / fetchTrades / 原生 metrics）。
+# 统一数据集注册表。vision 侧历史初始化优先走月归档（请求量少约 30 倍）：
+# K 线四类 + aggTrades/trades + fundingRate 都有月度；bookDepth/metrics/bookTicker
+# 月度 404 或稀疏，仍走日归档。ccxt 侧能力按 4.5.93 实测。
 DATASET_SPECS: dict[str, DatasetSpec] = {
     "klines": DatasetSpec(
         "klines", True,
-        SourceCapability(SourceKind.HISTORY),
+        SourceCapability(SourceKind.HISTORY, granularity="monthly"),
         SourceCapability(SourceKind.HISTORY, "fetchOHLCV"),
     ),
     "indexPriceKlines": DatasetSpec(
         "indexPriceKlines", True,
-        SourceCapability(SourceKind.HISTORY),
+        SourceCapability(SourceKind.HISTORY, granularity="monthly"),
         SourceCapability(SourceKind.HISTORY, "fetchIndexOHLCV"),
     ),
     "markPriceKlines": DatasetSpec(
         "markPriceKlines", True,
-        SourceCapability(SourceKind.HISTORY),
+        SourceCapability(SourceKind.HISTORY, granularity="monthly"),
         SourceCapability(SourceKind.HISTORY, "fetchMarkOHLCV"),
     ),
     "premiumIndexKlines": DatasetSpec(
         "premiumIndexKlines", True,
-        SourceCapability(SourceKind.HISTORY),
+        SourceCapability(SourceKind.HISTORY, granularity="monthly"),
         SourceCapability(SourceKind.HISTORY, "fetchPremiumIndexOHLCV"),
     ),
     "trades": DatasetSpec(
         "trades", False,
-        SourceCapability(SourceKind.HISTORY),
+        SourceCapability(SourceKind.HISTORY, granularity="monthly"),
         SourceCapability(SourceKind.HISTORY, "fetchTrades"),
     ),
     "bookDepth": DatasetSpec(
@@ -459,10 +461,14 @@ def fetch_history(
     downloader: Callable[[str], bytes] | None = None,
     sink: Callable[[str, str, str, pd.DataFrame], None] | None = None,
 ) -> FetchResult:
-    """从 data vision 日归档拉指定区间的全部历史（逐日、原样、带 checksum）。
+    """从 data vision 归档拉指定区间的全部历史（原样、带 checksum）。
 
-    给了 ``sink`` 就逐日流式交给它（``sink(dataset, symbol, day, frame)``），
-    不在内存里堆全量——用于 L0 落盘；否则返回合并后的 DataFrame。
+    历史初始化优先走**月归档**（K 线四类 / 逐笔 / 资金费），一个月一个 zip，
+    请求量比逐日少约 30 倍；仅 bookDepth/metrics/bookTicker 等无月归档的回落日归档。
+
+    给了 ``sink`` 就逐段流式交给它（``sink(dataset, symbol, period, frame)``，
+    ``period`` 是 ``YYYY-MM`` 或 ``YYYY-MM-DD``），不在内存里堆全量——用于 L0
+    落盘；否则返回合并后的 DataFrame。
     """
     ad = get_adapter(exchange)
     mkt = normalize_market(market)
@@ -487,7 +493,9 @@ def fetch_history(
     def collecting(ds: str, sym: str, period: str, frame: pd.DataFrame) -> None:
         collected.append((period, frame))
         if sink is not None:
-            sink(ds, sym, period, frame)
+            # 落盘一律用统一数据集名；归档内部名（funding → fundingRate）
+            # 只是 URL/解析用的别名，泄漏到 L0 路径会写出第二份孤立数据。
+            sink(name, sym, period, frame)
 
     common = dict(
         symbols=[symbol],
@@ -497,7 +505,10 @@ def fetch_history(
         retries=retries, workers=workers, verify=verify,
     )
     if monthly:
-        reports = vd.download_monthly([vname], months=vd.month_range(lo, hi), **common)
+        reports = vd.download_monthly(
+            [vname], months=vd.month_range(lo, hi),
+            timeframe=tf or "1d", **common,
+        )
         registry = vd.MONTHLY_DATASETS
     else:
         reports = vd.download_daily(

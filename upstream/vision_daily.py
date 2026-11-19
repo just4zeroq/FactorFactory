@@ -1,9 +1,14 @@
-"""data.binance.vision **日归档**下载（L0 数据基座专用，独立于 flow 主流程）。
+"""data.binance.vision 归档下载（L0 数据基座专用，独立于 flow 主流程）。
 
 与 ``upstream/binance_vision.py`` 的区别：那是月度归档、只做 ohlcv/funding、
-写进主流程 store；这里按日路径 ``data/<market>/daily/`` 拉取 8 类原始行情，
-**保留源文件的全部列**（quote_volume / count / taker_buy / notional 等），
-不写主流程的 ``store.DATASETS`` 契约——主流程的 checksum 与字段约束不动。
+写进主流程 store；这里同时支持日路径 ``data/<market>/daily/`` 与月路径
+``data/<market>/monthly/``，拉取原始行情并**保留源文件的全部列**
+（quote_volume / count / taker_buy / notional 等），不写主流程的
+``store.DATASETS`` 契约——主流程的 checksum 与字段约束不动。
+
+**历史初始化优先走月归档**：一个月一个 zip（含整月），K 线/逐笔/资金费都覆盖，
+请求量比逐日下载少约 30 倍。只有月归档缺失的数据集（bookDepth/metrics/bookTicker）
+才回落到日归档。两条路径共用同一套 checksum 与解析内核。
 
 目录入口（用户确认）：
 - 日：``https://data.binance.vision/?prefix=data/futures/um/daily/`` 与 ``.../spot/daily/``
@@ -29,13 +34,21 @@ metrics               metrics/<SYM>/<SYM>-metrics-<YYYY-MM-DD>.zip
 bookTicker            bookTicker/<SYM>/<SYM>-bookTicker-<YYYY-MM-DD>.zip
 ====================  ===============================================================
 
-月度归档（相对 ``data/<market>/monthly/``）：
+月度归档（相对 ``data/<market>/monthly/``，历史初始化优先用，请求量少约 30 倍）：
 
 ====================  ===============================================================
 类型                  路径模板
 ====================  ===============================================================
+klines                klines/<SYM>/<tf>/<SYM>-<tf>-<YYYY-MM>.zip
+indexPriceKlines      indexPriceKlines/<SYM>/<tf>/<SYM>-<tf>-<YYYY-MM>.zip
+markPriceKlines       markPriceKlines/<SYM>/<tf>/<SYM>-<tf>-<YYYY-MM>.zip
+premiumIndexKlines    premiumIndexKlines/<SYM>/<tf>/<SYM>-<tf>-<YYYY-MM>.zip
+aggTrades             aggTrades/<SYM>/<SYM>-aggTrades-<YYYY-MM>.zip
+trades                trades/<SYM>/<SYM>-trades-<YYYY-MM>.zip
 fundingRate           fundingRate/<SYM>/<SYM>-fundingRate-<YYYY-MM>.zip
 ====================  ===============================================================
+
+仅日归档（月度 404 或稀疏）：bookDepth / metrics / bookTicker。
 
 实测记录（用户给的样本 + 本地下载校验）：
 - ``bookTicker``：``1000BONKUSDT-bookTicker-2024-03-30.zip`` 与
@@ -157,18 +170,59 @@ DAILY_DATASETS: dict[str, DailySpec] = {
 
 @dataclass(frozen=True)
 class MonthlySpec:
-    """一类月归档的元信息（结构与 :class:`DailySpec` 对齐，日期占位是 ``{month}``）。"""
+    """一类月归档的元信息（结构与 :class:`DailySpec` 对齐，日期占位是 ``{month}``）。
+
+    ``needs_tf`` 表示路径里带 timeframe 段（K 线类月度归档同日归档，形如
+    ``klines/<SYM>/<tf>/<SYM>-<tf>-<YYYY-MM>.zip``）。
+    """
 
     path: str
     time_col: str
     time_kind: str  # "epoch" | "string"
     value_cols: tuple[str, ...]
     markets: tuple[str, ...] = ("futures",)
+    needs_tf: bool = False
     verified: bool = True
     note: str = ""
 
 
+# 月归档注册表。实测（2025-01 样本）：K 线四类 + aggTrades + trades + fundingRate
+# 都有月度；bookDepth / metrics 月度 404（只有日归档），bookTicker 归档稀疏且无月度。
+# K 线月度包是单 CSV、列与日包完全一致，parse_monthly 直接复用同一套解析内核。
 MONTHLY_DATASETS: dict[str, MonthlySpec] = {
+    "klines": MonthlySpec(
+        path="klines/{sym}/{tf}/{sym}-{tf}-{month}.zip",
+        time_col="open_time", time_kind="epoch", value_cols=_KLINE_COLS,
+        markets=("spot", "futures"), needs_tf=True,
+    ),
+    "indexPriceKlines": MonthlySpec(
+        path="indexPriceKlines/{sym}/{tf}/{sym}-{tf}-{month}.zip",
+        time_col="open_time", time_kind="epoch", value_cols=_KLINE_COLS,
+        needs_tf=True,
+    ),
+    "markPriceKlines": MonthlySpec(
+        path="markPriceKlines/{sym}/{tf}/{sym}-{tf}-{month}.zip",
+        time_col="open_time", time_kind="epoch", value_cols=_KLINE_COLS,
+        needs_tf=True,
+    ),
+    "premiumIndexKlines": MonthlySpec(
+        path="premiumIndexKlines/{sym}/{tf}/{sym}-{tf}-{month}.zip",
+        time_col="open_time", time_kind="epoch", value_cols=_KLINE_COLS,
+        needs_tf=True,
+    ),
+    "aggTrades": MonthlySpec(
+        path="aggTrades/{sym}/{sym}-aggTrades-{month}.zip",
+        time_col="transact_time", time_kind="epoch",
+        value_cols=("agg_trade_id", "price", "quantity", "first_trade_id",
+                    "last_trade_id", "transact_time", "is_buyer_maker"),
+        markets=("spot", "futures"),
+    ),
+    "trades": MonthlySpec(
+        path="trades/{sym}/{sym}-trades-{month}.zip",
+        time_col="time", time_kind="epoch",
+        value_cols=("id", "price", "qty", "quote_qty", "time", "is_buyer_maker"),
+        markets=("spot", "futures"),
+    ),
     "fundingRate": MonthlySpec(
         path="fundingRate/{sym}/{sym}-fundingRate-{month}.zip",
         time_col="calc_time", time_kind="epoch",
@@ -275,14 +329,21 @@ def month_range(start: date, end: date) -> list[str]:
 
 def monthly_url(
     dataset: str, symbol: str, month: str, *, market: str = "futures",
+    timeframe: str = "1d",
 ) -> str:
-    """按月模板构造归档 URL。``month`` 是 ``YYYY-MM``，symbol 用币安字形。"""
+    """按月模板构造归档 URL。``month`` 是 ``YYYY-MM``，symbol 用币安字形。
+
+    K 线类（``needs_tf``）路径带 ``<tf>`` 段，用 ``timeframe`` 填充；非 K 线忽略。
+    """
     spec = MONTHLY_DATASETS.get(dataset)
     if spec is None:
         raise FlowError(E1004, f"未知月度数据集 {dataset!r}", path="datasets")
     if market not in spec.markets:
         raise FlowError(E1004, f"{market} 市场没有 {dataset} 月度归档", path="market")
-    path = spec.path.format(sym=_vision_symbol(symbol), month=str(month))
+    fields: dict[str, str] = {"sym": _vision_symbol(symbol), "month": str(month)}
+    if spec.needs_tf:
+        fields["tf"] = str(timeframe or "1d").strip().lower()
+    path = spec.path.format(**fields)
     return f"{BASE_URL}/data/{market_prefix(market)}/monthly/{path}"
 
 
@@ -518,6 +579,7 @@ def download_monthly(
     symbols: list[str],
     vision_symbols: dict[str, str],
     months: list[str],
+    timeframe: str = "1d",
     market: str = "futures",
     sink: Callable[[str, str, str, pd.DataFrame], None],
     downloader: Downloader | None = None,
@@ -545,7 +607,7 @@ def download_monthly(
 
     def fetch_one(dataset: str, symbol: str, month: str) -> tuple[pd.DataFrame | None, str]:
         sym = vision_symbols.get(symbol) or _vision_symbol(symbol)
-        url = monthly_url(dataset, sym, month, market=market)
+        url = monthly_url(dataset, sym, month, market=market, timeframe=timeframe)
         try:
             blob = get(url)
         except Exception as exc:

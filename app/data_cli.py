@@ -8,7 +8,7 @@
 
 ```
 python -m app.data_cli universe [--probe]      # 1. 交易对元数据（ccxt，含已下架）
-python -m app.data_cli market-init --start ... --end ...  # 2. data vision 日归档初始化 L0
+python -m app.data_cli market-init --start ... --end ...  # 2. data vision 归档初始化 L0（优先月度）
 python -m app.data_cli market-update           # 3. ccxt 每日增量补数
 python -m app.data_cli sync --datasets ohlcv,funding   # 4. 备份站全市场历史落到 L0
 python -m app.data_cli pool --name crypto_all  # 5. 由 K 线算出挖掘用币池
@@ -18,7 +18,7 @@ python -m app.data_cli l1 --set crypto_all     # 6. 把币池数据装配到 L1
 取数门面 `market_data` 提供三原语（只取数不落盘，本 CLI 负责落 L0）：
 
 - `fetch_metadata` — 元数据走 ccxt `load_markets`；
-- `fetch_history` — 全历史走 data vision 日归档，K 线类支持 `timeframe`；
+- `fetch_history` — 全历史走 data vision 归档（优先月度，请求量少约 30 倍），K 线类支持 `timeframe`；
 - `fetch_range` — 指定区间，历史走归档、最近几天用 ccxt 补。
 
 多交易所通过适配器注册表扩展，当前仅注册 binance。L0 落在
@@ -170,6 +170,17 @@ def _symbols_for(args: Any, root: Path) -> list[str]:
     if not records:
         raise FlowError(E4002, "L0 元数据表为空", path="l0.universe",
                         hint="先 python -m app.data_cli universe")
+    # universe 表把现货与合约写在同一个文件里；按 --market 隔离，否则
+    # futures 命令会拿 spot 标的去合约归档路径下载（整批 404）。
+    market = getattr(args, "market", None)
+    if market:
+        records = {
+            s: r for s, r in records.items()
+            if str(r.get("market") or "") == str(market)
+        }
+    if bool(getattr(args, "include_delisted", False)):
+        # 研究/回测要带已下架标的（含 unknown），避免幸存者偏差。
+        return sorted(records)
     return us.active_symbols(records)
 
 
@@ -239,11 +250,22 @@ def _cmd_universe(args: Any, root: Path) -> dict[str, Any]:
         if bars:
             discovered[symbol] = us.attach_bars(rec, first_bar=first, last_bar=last, bars=bars)
 
-    previous = us.load_universe(root)
-    merged = us.merge_universe(
+    # 只刷新当前市场那部分记录：universe 表同文件混装 spot/um，若拿全表
+    # merge，spot 刷新会把不在本次发现里的 um active 记录降成 unknown。
+    previous_all = us.load_universe(root)
+    previous = {
+        s: r for s, r in previous_all.items()
+        if str(r.get("market") or "") == market
+    }
+    merged_market = us.merge_universe(
         previous, discovered, observed_at=observed_at,
         delist_gap_days=int(getattr(args, "delist_gap_days", 7) or 7),
     )
+    merged = {
+        s: r for s, r in previous_all.items()
+        if str(r.get("market") or "") != market
+    }
+    merged.update(merged_market)
 
     # 可选：过滤稳定币交易对。默认保留全量元数据；显式 --exclude-stable 才剔除。
     # 放在 merge 之后：稳定币判定用归一化后的 asset_class，与 pool 口径一致。
@@ -276,19 +298,31 @@ def _cmd_universe(args: Any, root: Path) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- 行情：初始化 / 增量
 def _cmd_market_init(args: Any, root: Path) -> dict[str, Any]:
-    """用 data.binance.vision 日归档初始化/补齐 L0 历史行情。
+    """用 data.binance.vision 归档初始化/补齐 L0 历史行情。
 
-    日归档路径 ``data/<market>/daily/<dataset>/...``，逐日下载、sha256 校验、
-    原样落 parquet（保留 count / taker_buy / notional 等源列）。
+    历史初始化优先走月归档（``data/<market>/monthly/...``，一个 zip 含整月，
+    请求量少约 30 倍）；无月归档的（bookDepth/metrics/bookTicker）回落日归档。
+    两种粒度都做 sha256 校验、原样落 parquet（保留 count / taker_buy / notional 等源列）。
     """
     from datetime import date as _date
 
+    from services import market_data as md
     from upstream import vision_daily as vd
 
     market = str(getattr(args, "market", "futures") or "futures")
-    datasets = vd.validate_datasets(
-        str(getattr(args, "datasets", "klines") or "klines").split(","), market,
-    )
+    # 按能力配置分派：funding 只有月度归档，不在日归档注册表里。
+    datasets: list[str] = []
+    for name in str(getattr(args, "datasets", "klines") or "klines").split(","):
+        name = name.strip()
+        if not name:
+            continue
+        spec = md.get_spec(name)
+        vname = spec.vision.name or name
+        if spec.vision.monthly:
+            vd.validate_monthly([vname], market)
+        else:
+            vd.validate_datasets([vname], market)
+        datasets.append(name)
     symbols = _symbols_for(args, root)
     limit = int(getattr(args, "limit", 0) or 0)
     if limit > 0:
@@ -298,8 +332,8 @@ def _cmd_market_init(args: Any, root: Path) -> dict[str, Any]:
     end_raw = getattr(args, "end", None)
     if not start_raw or not end_raw:
         raise FlowError(
-            E1004, "日归档必须给 --start 和 --end", path="range",
-            hint="用 YYYY-MM-DD；日归档按天定位，不接受缺省区间",
+            E1004, "归档初始化必须给 --start 和 --end", path="range",
+            hint="用 YYYY-MM-DD；月度归档按此范围换算成整月，不接受缺省区间",
         )
     try:
         start = _date.fromisoformat(str(start_raw)[:10])
@@ -309,8 +343,6 @@ def _cmd_market_init(args: Any, root: Path) -> dict[str, Any]:
     days = vd.day_range(start, end)
     timeframe = str(getattr(args, "timeframe", "1d") or "1d")
     proxy = getattr(args, "proxy", None)
-
-    from services import market_data as md
 
     def sink(dataset: str, symbol: str, day: str, frame: Any) -> None:
         """下载器回调：把单日帧并入 L0 parquet。"""
@@ -337,7 +369,13 @@ def _cmd_market_init(args: Any, root: Path) -> dict[str, Any]:
             fetched.append(res)
     warnings: list[str] = []
     # 聚合逐标的告警，避免全市场时刷屏：同类问题只报一次并带标的数。
-    unverified = {r.dataset for r in fetched if not vd.DAILY_DATASETS[r.dataset].verified}
+    unverified: set[str] = set()
+    for r in fetched:
+        spec = md.get_spec(r.dataset)
+        vname = spec.vision.name or r.dataset
+        registry = vd.MONTHLY_DATASETS if spec.vision.monthly else vd.DAILY_DATASETS
+        if not registry[vname].verified:
+            unverified.add(r.dataset)
     for dataset in sorted(unverified):
         warnings.append(
             f"{dataset}: 归档路径未经实测确认（{vd.DAILY_DATASETS[dataset].note}）"
@@ -359,7 +397,10 @@ def _cmd_market_init(args: Any, root: Path) -> dict[str, Any]:
         agg["errors"] += r.errors
     return _envelope_ok("l0.market.init", None, {
         "source": "data.binance.vision",
-        "layout": "daily",
+        "layout": (
+            "mixed" if len({md.get_spec(d).vision.monthly for d in datasets}) > 1
+            else ("monthly" if datasets and md.get_spec(datasets[0]).vision.monthly else "daily")
+        ),
         "gate": "market_data.fetch_history",
         "base_root": str(us.base_root(root)),
         "datasets": [
@@ -393,7 +434,14 @@ def _cmd_market_update(args: Any, root: Path) -> dict[str, Any]:
     api_limit = int(getattr(args, "api_limit", 500) or 500)
     since_days = int(getattr(args, "since_days", 3) or 3)
     today = datetime.now(timezone.utc).date()
-    start = today - _td(days=since_days)
+    start_raw = getattr(args, "start", None)
+    if start_raw:
+        try:
+            start = _date.fromisoformat(str(start_raw)[:10])
+        except ValueError as exc:
+            raise FlowError(E1004, f"日期格式错误: {start_raw}", path="range") from exc
+    else:
+        start = today - _td(days=since_days)
 
     client = md.get_adapter("binance").make_client(market, proxy=proxy)
     results: list[dict[str, Any]] = []
@@ -683,7 +731,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="末根 bar 距今超过此天数判为下架（默认 7）")
     u.add_argument("--format", choices=FORMATS, default="json")
 
-    mi = sub.add_parser("market-init", help="用 data.binance.vision 日归档初始化/补齐 L0 行情")
+    mi = sub.add_parser("market-init", help="用 data.binance.vision 归档初始化/补齐 L0 行情（优先月度）")
     mg = mi.add_mutually_exclusive_group()
     mg.add_argument("--symbols", help="逗号分隔的标的清单")
     mg.add_argument("--set", help="L0 universe 中的标的集名（schemas/symbol_sets.json）")
@@ -695,6 +743,8 @@ def build_parser() -> argparse.ArgumentParser:
     mi.add_argument("--start", required=True, help="起始日 YYYY-MM-DD（含）")
     mi.add_argument("--end", required=True, help="结束日 YYYY-MM-DD（含）")
     mi.add_argument("--limit", type=int, default=0, help="只处理前 N 个标的（分批用）")
+    mi.add_argument("--include-delisted", action="store_true",
+                    help="把已下架/未知状态的标的也纳入取数（研究口径，防幸存者偏差）")
     mi.add_argument("--proxy", help="代理（如 http://127.0.0.1:7890）")
     mi.add_argument("--timeout", type=float, default=60)
     mi.add_argument("--retries", type=int, default=6)
@@ -712,7 +762,10 @@ def build_parser() -> argparse.ArgumentParser:
     mu.add_argument("--market", default="futures", choices=("futures", "spot"))
     mu.add_argument("--timeframe", default="1d")
     mu.add_argument("--api-limit", type=int, default=500, help="单次 API 返回条数上限")
-    mu.add_argument("--since-days", type=int, default=3, help="从 L0 末端回看天数（默认 3）")
+    mu.add_argument("--since-days", type=int, default=3, help="从今天回看天数（默认 3）")
+    mu.add_argument("--start", help="指定起始日 YYYY-MM-DD（给定后忽略 --since-days）")
+    mu.add_argument("--include-delisted", action="store_true",
+                    help="把已下架/未知状态的标的也纳入 ccxt 补数（多数已下架标的 ccxt 无历史，会跳过）")
     mu.add_argument("--proxy", help="代理")
     mu.add_argument("--limit", type=int, default=0, help="只处理前 N 个标的")
     mu.add_argument("--format", choices=FORMATS, default="json")

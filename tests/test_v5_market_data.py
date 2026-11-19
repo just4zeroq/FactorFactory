@@ -123,22 +123,55 @@ def test_fetch_metadata_via_injected_client(tmp_path):
 
 # ---------------------------------------------------------------- 全历史原语
 def test_fetch_history_concat_and_timeframe_url():
+    """历史初始化走月度：两个月各一行 → 合并 2 行，URL 带 /1d/。"""
     seen_urls: list[str] = []
-    # 两天各一行，时间戳不同 → 合并后 2 行。
+    # 月度 URL 里含 YYYY-MM；按月份返回该月第一行。
     def downloader(url: str) -> bytes:
         seen_urls.append(url)
-        day = "2026-01-01" if "2026-01-01" in url else "2026-01-02"
+        day = "2026-01-01" if "2026-01" in url else "2026-02-01"
         return _kline_csv([(_ms(day), 1.0)])
 
     out = md.fetch_history(
-        "BTC/USDT:USDT", "klines", date(2026, 1, 1), date(2026, 1, 2),
+        "BTC/USDT:USDT", "klines", date(2026, 1, 1), date(2026, 2, 15),
         timeframe="1d", downloader=downloader, verify=False,
     )
     assert out.rows == 2
     assert out.timeframe == "1d"
-    assert "/1d/" in seen_urls[0]
-    assert len(seen_urls) == 2
+    assert "/monthly/" in seen_urls[0] and "/1d/" in seen_urls[0]
+    assert len(seen_urls) == 2  # 2 个月，不是 45 天
     assert set(out.frame.columns) >= {"timestamp", "open", "close", "volume"}
+
+
+def test_fetch_history_monthly_request_count():
+    """请求量：近一年 K 线走月度 = 12 个 zip，而不是 365 个。"""
+    seen: list[str] = []
+    md.fetch_history(
+        "BTC/USDT:USDT", "klines", date(2025, 1, 1), date(2025, 12, 31),
+        downloader=lambda u: (seen.append(u), _kline_csv([(_ms("2025-01-01"), 1.0)]))[1],
+        verify=False,
+    )
+    assert len(seen) == 12
+    assert all("/monthly/" in u for u in seen)
+
+
+def test_fetch_history_bookdepth_still_daily():
+    """无月归档的数据集（bookDepth）仍走日归档。"""
+    seen: list[str] = []
+    # bookDepth 是字符串时间列，用最小 CSV 直接构造。
+    def downloader(url: str) -> bytes:
+        seen.append(url)
+        csv = "timestamp,percentage,depth,notional\n2026-01-01 00:00:00,0.1,500,1000\n"
+        buf = BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("data.csv", csv)
+        return buf.getvalue()
+
+    md.fetch_history(
+        "BTC/USDT:USDT", "bookDepth", date(2026, 1, 1), date(2026, 1, 3),
+        downloader=downloader, verify=False,
+    )
+    assert len(seen) == 3  # 3 天
+    assert all("/daily/" in u for u in seen)
 
 
 def test_fetch_history_respects_timeframe():
@@ -161,15 +194,25 @@ def test_fetch_history_funding_uses_monthly_archive():
         day = f"{month}-01"
         return _funding_csv([(_ms(day), 0.0001), (_ms(day, 8), 0.0002)])
 
+    sink_datasets: list[str] = []
+    sink_frames: list = []
+
+    def _sink(ds: str, sym: str, period: str, frame) -> None:
+        sink_datasets.append(ds)
+        sink_frames.append(frame)
+
     out = md.fetch_history(
         "BTC/USDT:USDT", "funding", date(2026, 1, 1), date(2026, 2, 28),
-        verify=False, downloader=downloader,
+        verify=False, downloader=downloader, sink=_sink,
     )
     assert out.rows == 4  # 两个月各 2 行
     assert "/monthly/fundingRate/" in seen[0]
     assert "BTCUSDT-fundingRate-2026-01.zip" in seen[0]
-    assert "last_funding_rate" in out.frame.columns
-    assert "timestamp" in out.frame.columns
+    # 给了 sink 就不在内存里合并 frame，列要落到 sink 收到的帧上检查。
+    assert "last_funding_rate" in sink_frames[0].columns
+    assert "timestamp" in sink_frames[0].columns
+    # sink 必须拿统一名；归档内部名 fundingRate 泄漏到 L0 路径会写出孤立数据。
+    assert sink_datasets == ["funding", "funding"]
 
 
 # ---------------------------------------------------------------- 区间原语

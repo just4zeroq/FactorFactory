@@ -20,6 +20,8 @@
 from __future__ import annotations
 
 import os
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -124,9 +126,32 @@ def append_frame(
         return {"added": 0, "replaced": replaced, "total": 0}
 
     # 原子写：同盘 tmp + replace，读侧永不读到半个文件。
-    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
-    combined.to_parquet(tmp, index=False)
-    os.replace(tmp, path)
+    # tmp 名带 uuid，避免同一进程内多线程写同一标的时互相踩踏；
+    # Windows 上杀软/索引服务可能短暂持有目标文件句柄，replace 失败时有限重试。
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        combined.to_parquet(tmp, index=False)
+        last: Exception | None = None
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                last = None
+                break
+            except OSError as exc:
+                last = exc
+                if attempt < 4:
+                    time.sleep(0.2 * (attempt + 1))
+        if last is not None:
+            raise FlowError(
+                E4002, f"L0 parquet 落盘失败: {path}", path="l0.store",
+                context={"error": f"{type(last).__name__}: {last}"},
+            )
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
     return {"added": added, "replaced": replaced, "total": len(combined)}
 
 
