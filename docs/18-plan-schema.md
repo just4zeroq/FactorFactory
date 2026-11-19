@@ -51,7 +51,7 @@ S0 的验收里有五条（S0-1 ~ S0-5）全部是「配置写错了会怎样」
 
 ## 3. 顶层键
 
-十三个键，其中 `portfolio` 与 `certify` 可缺省（研究阶段不需要认证）。**「构成性」列决定它是否进 `policy_digest`**。
+十四个键，其中 `portfolio`、`certify` 与 `evaluation` 可缺省（研究阶段不需要认证或正式 scorecard）。**「构成性」列决定它是否进 `policy_digest`**。
 
 | 键 | 必填 | 构成性 | 内容 | 相关拒绝 |
 |---|---|---|---|---|
@@ -67,9 +67,12 @@ S0 的验收里有五条（S0-1 ~ S0-5）全部是「配置写错了会怎样」
 | `verdict` | 是 | 是 | 唯一裁判与三个阈值 | `E1006` 严格模式未注入 |
 | `portfolio` | 否 | 是 | 合成器、正交/相关约束（`orthogonalise` / `corr_max`，可缺省）与三段窗口 | `E1018` / `E1019` / `E1021` / `E1008` |
 | `certify` | 否 | 是 | 认证实现与折数 | — |
+| `evaluation` | 否 | 是 | 预注册评价档位与阈值；`profile` / `thresholds` | `E1005` 事后覆盖 / `E1004` 未知档位 |
 | `operations` | 否 | **否** | 缓存、并发、日志级别 | 改它**不得**改变任何指纹 |
 
 `operations` 是唯一非构成性块。它是「怎么跑完」，不是「在回答什么问题」——把它放进 `policy_digest`，会让「改日志级别导致全部产物失效」，那等于逼人不敢开 debug。
+
+**`evaluation` 是预注册评价档位，不是结果出来后的旋钮。** `profile` 只允许 `strict_institutional_v1` / `exploratory_v1` / `diagnostic_v1`；`thresholds` 只允许覆盖档位声明过的白名单键。任何阈值覆盖都会把 scorecard 标成 `profile_locked=false` 并取消晋升资格。缺省档位是 `strict_institutional_v1`，但如果计划没有显式写 `evaluation`，scorecard 同样标记为未预注册。这样「因子没过就换个指标再算」不能伪装成同一份研究。
 
 **`supply.symbols` 是名字，不是成员清单。** 成员在编译期由标的集解析出来并固化进 `Boundary` 产物。把 60 个 symbol 内联进计划有两个后果：一是每次调仓都要改配置文件，二是不存在「同一份计划、同一份成员」这个可比对的对象。
 

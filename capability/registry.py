@@ -10,6 +10,7 @@ degenerate_policy 是常数替换，任何一条不满足就整体失败，不�
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,6 +22,42 @@ _REGISTRY_DIR = Path(__file__).parent / "registry"
 _BANNED_NAMES = frozenset({"center", "bfill", "backfill", "lead", "future", "pct_change_negative"})
 # 名字空间四档（s0/04 §5.1）
 NAMESPACES = frozenset({"open", "closed_multi", "single", "fixed"})
+_PARAM_KINDS = frozenset({"count", "fraction"})
+
+
+def param_kind(domain: Mapping[str, Any]) -> str:
+    """参数域类型：`count`（默认，正整数窗口/位移）或 `fraction`（[0,1] 实数）。
+
+    `kind` 缺省为 `count`，旧注册表不用改。只有 `quantile` 的 q 位置用
+    `fraction`：它是分位点而不是窗口，允许 0/1（min/max），拒绝 >1 与 NaN。
+    """
+    return str(domain.get("kind", "count"))
+
+
+def param_error(name: str, pname: str, domain: Mapping[str, Any],
+                value: Any) -> str | None:
+    """校验一个常量参数值，返回错误说明；合法返回 None。
+
+    三处调用者（evaluate / mining.normalise_ast / factors._check_ast）必须用同一个
+    判定，否则「AST 规范化通过、内置因子校验通过、求值才炸」的分叉又回来了。
+    """
+    kind = param_kind(domain)
+    if kind not in _PARAM_KINDS:
+        return f"{name}.{pname} 的参数域 kind={kind!r} 未知"
+    if kind == "count":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return f"{name}.{pname} 必须是整数（计数位置不接受 2.5）"
+    else:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"{name}.{pname} 必须是实数"
+        if not math.isfinite(float(value)):
+            return f"{name}.{pname} 必须是有限值"
+    lo, hi = domain.get("min"), domain.get("max")
+    if lo is not None and value < lo:
+        return f"{name}.{pname}={value} < 下界 {lo}"
+    if hi is not None and value > hi:
+        return f"{name}.{pname}={value} > 上界 {hi}"
+    return None
 
 
 @dataclass(frozen=True)
@@ -78,6 +115,13 @@ def _check_operator(op: dict[str, Any], label: str) -> None:
     for pname, domain in (op.get("param_domain") or {}).items():
         if not isinstance(domain, Mapping):
             raise FlowError(E1015, f"算子 '{name}' 的 param_domain.{pname} 非法", path=label)
+        kind = param_kind(domain)
+        if kind not in _PARAM_KINDS:
+            raise FlowError(
+                E1015,
+                f"算子 '{name}' 的 {pname}.kind={kind!r} 未知（只允许 count/fraction）",
+                path=f"{label}.param_domain.{pname}.kind",
+            )
         bounds: dict[str, float] = {}
         for side in ("min", "max"):
             value = domain.get(side)
@@ -89,13 +133,25 @@ def _check_operator(op: dict[str, Any], label: str) -> None:
                     f"算子 '{name}' 的 {pname}.{side} 必须是数字，得到 {value!r}",
                     path=f"{label}.param_domain.{pname}.{side}",
                 )
-            if value < 1:
+            if kind == "count" and value < 1:
                 raise FlowError(
                     E1015,
                     f"算子 '{name}' 的 {pname}.{side}={value} < 1（窗口/位移必须为正）",
                     path=f"{label}.param_domain.{pname}.{side}",
                 )
+            if kind == "fraction" and not (0 <= value <= 1):
+                raise FlowError(
+                    E1015,
+                    f"算子 '{name}' 的 {pname}.{side}={value} 不在 [0,1]（分位点）",
+                    path=f"{label}.param_domain.{pname}.{side}",
+                )
             bounds[side] = value
+        if kind == "fraction" and len(bounds) != 2:
+            raise FlowError(
+                E1015,
+                f"算子 '{name}' 的 {pname} 是 fraction，必须同时声明 min 与 max",
+                path=f"{label}.param_domain.{pname}",
+            )
         if "min" in bounds and "max" in bounds and bounds["min"] > bounds["max"]:
             raise FlowError(
                 E1015,

@@ -61,7 +61,7 @@ def test_gross_handles_insufficient_width():
 
 
 def test_fitness_mode_validation():
-    """fitness_mode 必须是已知值；raw_gross 缺 raw 时 fail-closed。"""
+    """fitness_mode 必须是已知值；raw_gross/net_proxy 缺 raw 时 fail-closed。"""
     from capability.panel import Panel
     import numpy as np
 
@@ -70,3 +70,32 @@ def test_fitness_mode_validation():
         _make_fitness(None, None, score, mode="bogus")
     with pytest.raises(FlowError):
         _make_fitness(None, None, score, mode="raw_gross", raw=None)
+    with pytest.raises(FlowError):
+        _make_fitness(None, None, score, mode="net_proxy", raw=None)
+
+
+def test_net_proxy_penalises_high_turnover():
+    """同样毛收益下，换手高的信号 net_proxy 更低（搜索目标与净成本同轴）。"""
+    s = __import__("capability.ops.search", fromlist=["_net_proxy_from_raw"])
+    values = np.tile(np.arange(6, dtype="float64"), (20, 1))
+    stable = values.copy()  # 截面序恒定 → 零换手
+    flipping = values.copy()
+    flipping[1::2] = flipping[1::2][:, ::-1]  # 隔期翻转 → 高换手
+    # raw 由「因子在本截面的排名」决定，而不是固定绑在某个 sym 上：
+    # 这样两种信号的做多组总拿到高 raw、做空组总拿到低 raw，毛收益相同，
+    # 唯一差别是换手——才能干净地检验 net_proxy 对换手的惩罚。
+    def raw_by_rank(sig):
+        out = np.empty_like(sig)
+        for t in range(sig.shape[0]):
+            ranks = np.argsort(np.argsort(sig[t]))
+            out[t] = (ranks - 2.5) / 2.5 * 0.01
+        return out
+
+    valid = np.isfinite(values)
+    g_stable = s._gross_from_raw(stable, valid, raw_by_rank(stable))
+    g_flip = s._gross_from_raw(flipping, valid, raw_by_rank(flipping))
+    # raw_gross 口径两者毛收益接近——这正是它看不见换手的证据
+    assert abs(g_stable - g_flip) < 1e-9
+    n_stable = s._net_proxy_from_raw(stable, valid, raw_by_rank(stable), lambda_turn=0.004)
+    n_flip = s._net_proxy_from_raw(flipping, valid, raw_by_rank(flipping), lambda_turn=0.004)
+    assert n_stable > n_flip  # 惩罚后，零换手的稳定信号排前面

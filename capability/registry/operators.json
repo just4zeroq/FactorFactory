@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "basis": "qweave 0.6.2 Alpha158 可用算子的因果安全子集；impl_symbol 显式映射到 qweave 函数名",
+  "basis": "qweave 0.6.2 因果安全子集；impl_symbol 显式映射到 qweave 函数名。v2 按 Alpha158 的时序族补齐（ts_rank/ts_argmax/ts_argmin/ts_skew/ts_kurt/ts_mad/slope/rsquare/resi/decay_linear/ema/product）与逐点算子（neg/power/signed_power）；v3 补齐 qweave 仍暴露但未登记的 quantile（双参数位：window + fraction q）、ts_count/ts_rank_raw、逐点 max/min、比较算子与 where_。group_rank/group_neutralize 需要列式分组字段，当前字段表没有，暂不登记。",
   "operators": [
     {
       "name": "ref",
@@ -203,6 +203,302 @@
       "param_domain": {},
       "degenerate_policy": "nan",
       "since": "v1"
+    },
+    {
+      "name": "ts_rank",
+      "impl_symbol": "ts_rank",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "ts_argmax",
+      "impl_symbol": "ts_argmax",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "ts_argmin",
+      "impl_symbol": "ts_argmin",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "ts_skew",
+      "impl_symbol": "ts_skew",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "ts_kurt",
+      "impl_symbol": "ts_kurt",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "ts_mad",
+      "impl_symbol": "ts_mad",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "product",
+      "impl_symbol": "product",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "decay_linear",
+      "impl_symbol": "decay_linear",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "ema",
+      "impl_symbol": "ema",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "slope",
+      "impl_symbol": "slope",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "rsquare",
+      "impl_symbol": "rsquare",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "resi",
+      "impl_symbol": "resi",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "neg",
+      "impl_symbol": "neg",
+      "arity": 1,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "power",
+      "impl_symbol": "power",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "signed_power",
+      "impl_symbol": "signed_power",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v2"
+    },
+    {
+      "name": "ts_count",
+      "impl_symbol": "ts_count",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "ts_rank_raw",
+      "impl_symbol": "ts_rank_raw",
+      "arity": 2,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "quantile",
+      "impl_symbol": "quantile",
+      "arity": 3,
+      "param_domain": {
+        "window": {
+          "min": 1,
+          "max": 512
+        },
+        "q": {
+          "kind": "fraction",
+          "min": 0,
+          "max": 1
+        }
+      },
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "elem_max",
+      "impl_symbol": "max",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "elem_min",
+      "impl_symbol": "min",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "gt",
+      "impl_symbol": "__gt__",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "lt",
+      "impl_symbol": "__lt__",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "ge",
+      "impl_symbol": "__ge__",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "le",
+      "impl_symbol": "__le__",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "eq",
+      "impl_symbol": "__eq__",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "ne",
+      "impl_symbol": "__ne__",
+      "arity": 2,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v3"
+    },
+    {
+      "name": "where_",
+      "impl_symbol": "where_",
+      "arity": 3,
+      "param_domain": {},
+      "degenerate_policy": "nan",
+      "since": "v3"
     }
   ],
   "_self_check_note": "加载器会拒绝：负位移/窗口<=0/center/bfill/缺 impl_symbol/degenerate_policy=常数替换。本表全部因果安全。"

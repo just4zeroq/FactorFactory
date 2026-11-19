@@ -82,6 +82,7 @@ pip install -r requirements.txt
 > `ml4t-backtest` 不在 PyPI，从 git 固定 commit 安装（见 `requirements.txt`）。**不要**手动改它的 SHA：适配器依赖那个 build 的执行语义，换版本等于换研究口径。
 >
 > `qweave` 精确锁 `0.6.2`：算子集合与 NaN/窗口语义是 caliber 的一部分。
+> 当前白名单 **46 个算子**（v1 19 → v2 34 → v3 46）；与 qweave 公开原语的完整对照见 `docs/26-qweave-operator-surface-audit.md`。
 
 ---
 
@@ -567,13 +568,24 @@ python -m app.cli factors --status active
 
 | 写法 | 含义 |
 |---|---|
-| `mom20` | 内置因子池（33 个之一，见下） |
+| `mom20` | 内置因子池（59 个之一，见下） |
 | `db:<name>` / `db:<factor_id>` | 因子库里指定的那条 |
 | `db:*` | 库里全部 `active` |
 
-内置因子池（33 个）：
-- 纯 K 线（16）：`mom5` `mom20` `mom60` `rev5` `rev1` `rv20` `hl_range` `vwap_gap` `vol_ratio` `low_vol20` `low_vol60` `ts_efficiency10` `range_efficiency` `tsmom_60_5` `vol_price_diverge` `illiquidity`
-- 资金费 / 基差 / OI（17）：`funding_carry` `funding_carry14` `funding_carry21` `funding_carry_rank7` `funding_delta` `funding_lowvol14` `funding_volratio` `funding_volratio14` `funding_volratio21` `funding_basis7` `funding_volratio_basis` `funding_vol_interaction` `funding14_vol_interaction` `funding14_vol_interaction_scaled` `basis_carry` `basis_delta` `oi_change20`
+内置因子池（59 个）：
+- 纯 K 线（19，v1/v2）：`mom5` `mom20` `mom60` `rev5` `rev1` `rv20` `hl_range` `vwap_gap` `vol_ratio` `low_vol20` `low_vol60` `ts_efficiency10` `range_efficiency` `tsmom_60_5` `vol_price_diverge` `illiquidity` `low_parkinson20` `near_high60` `trend_r2_20`
+- qweave 迁入（9，v3，纯 K 线）：`vol_ret_corr10` `vol_level_corr10` `near_low10` `short_std5` `near_high5` `vol_close5_gap` `vol_chg_ret_corr6` `vol_high_rank_corr3` `vol_price_pos_corr6`
+- 加密原生补族（13，v4，其中 10 个纯 K 线 + 3 个衍生品）：`days_since_high60` `days_since_low60` `ret_skew20` `ret_kurt20` `ret_mad20` `trend_slope20` `trend_resi20` `ema_trend10_30` `vol_of_vol20` `up_day_ratio20` `funding_curve21_7` `oi_change5` `oi_funding_corr10`
+- 资金费 / 基差 / OI（18，v1/v2）：`funding_carry` `funding_carry14` `funding_carry21` `funding_carry_rank7` `funding_delta` `funding_lowvol14` `funding_volratio` `funding_volratio14` `funding_volratio21` `funding_basis7` `funding_volratio_basis` `funding_vol_interaction` `funding14_vol_interaction` `funding14_vol_interaction_scaled` `basis_carry` `basis_delta` `oi_change20` `funding_zscore7` `funding_curve21_7` `oi_change5` `oi_funding_corr10`
+
+> v2 新增的 4 个因子都带实测：`low_parkinson20` 是当前最强信号（fwd5 截面 IC 0.089、7 年全正），
+> `trend_r2_20` 的 IC 只有 0.010 但与库内所有因子 |ρ|≤0.12。取舍与淘汰记录见 `docs/23-operator-and-factor-expansion.md`。
+>
+> v3 从 qweave 的 450 个股票因子中迁入 9 个：68 个强信号 → 45 个算子可表达 → 21 个与库内 |ρ|≤0.6
+> → 族内去重 9 个，逐条用 FF 求值路径复算 IC 与 qweave 一致。详见 `docs/24-qweave-450-crypto-audit.md` §5。
+>
+> v4 又按「加密语义 + 不同族」补了 13 个（事件时间、尾部形态、资金费期限结构等），
+> 这批不以 IC 为准入，详见 `docs/25-crypto-native-factor-families.md`。
 
 > ⚠️ **评价口径警示**：`evidence.params.prefilter.return_transform` 的 `rank` / `rank_scaled` / `winsor` 仅供诊断，
 > **不得用于正式 verdict 的成本闸**。真实交易赚算术收益；rank 口径会把「rank IC 正但算术均值亏」的

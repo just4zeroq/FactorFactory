@@ -27,7 +27,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from capability.registry import default_registry
+from capability.registry import default_registry, param_error, param_kind
 
 # 并发自适应搜索互斥：两个 fit（needs_fitness）同时进入 → E2009。
 # 模块级而非实例级：不同搜索实例共享同一进程随机源，必须一起守。
@@ -70,9 +70,23 @@ class AlgorithmSpec:
 # 带参算子的末位参数是「计数」（窗口/滞后），只接受 int；其余算子的 const 是值，
 # int/float 皆可。02 §6 硬约束 2：位置决定语义——mul(close,2.0) 合法，
 # mean(close,2.0) 必须 E1003。normalise_ast 抛 ValueError，由调用方转 E1003。
-_PARAM_OPS = frozenset({
-    "delay", "ref", "sum", "mean", "std", "max", "min", "delta", "corr", "cov",
-})
+#
+# 名字表不手写：`param_domain` 就是「这个算子的末位是计数」的唯一声明处
+# （registry.py 的自检也读同一字段）。手写一份必然在扩表时与 JSON 分叉，
+# 而分叉的症状是「新算子的窗口能写成 2.5」，运行到求值才炸。
+def _param_domains(op: str) -> list[tuple[str, Mapping[str, Any]]]:
+    """按声明顺序返回这个算子的参数域；无参算子返回空表。
+
+    参数位不从 AST 的形状猜：`quantile` 有两个参数位（window 是 count、q 是
+    fraction），只看「末位是 int」会把它拒之门外，而只看「末位是数字」又会
+    放过 `mean(x, 2.5)`。域表是唯一真相。
+    """
+    spec = default_registry().operators.get(op)
+    if spec is None:
+        return []
+    return list((spec.get("param_domain") or {}).items())
+
+
 _MAX_AST_DEPTH = 64  # 02 §6 硬约束 3
 
 
@@ -112,16 +126,19 @@ def normalise_ast(node: Any, *, _depth: int = 0) -> Any:
             raise ValueError("op 必须是非空字符串")
         if not isinstance(args, (list, tuple)):
             raise ValueError("args 必须是列表")
-        # 参数位置：末位必须是以 int 表达的 const（bool 也不行）。规范化前校验
-        # 原始节点，否则 _canon_number 会把 2.0 归一成 2，绕过计数约束。
-        if op in _PARAM_OPS and args:
-            last = args[-1]
-            if not (isinstance(last, Mapping) and set(last) == {"const"}
-                    and isinstance(last["const"], int)
-                    and not isinstance(last["const"], bool)):
+        # 参数位置：每个 param_domain 对应 AST 末尾的一个 const 节点，顺序与
+        # JSON 声明一致。count 位置必须原始就是 int（规范化前查，否则 2.0 会
+        # 被 _canon_number 归一成 2，绕过计数约束）；fraction 位置允许实数。
+        domains = _param_domains(op)
+        for j, (pname, domain) in enumerate(domains):
+            node = args[len(args) - len(domains) + j]
+            if not (isinstance(node, Mapping) and set(node) == {"const"}):
                 raise ValueError(
-                    f"带参算子 {op!r} 的末位参数必须是整数 const（{{'const': int}}）"
+                    f"带参算子 {op!r} 的第 {j + 1} 个参数必须是 {{'const': 数}}"
                 )
+            err = param_error(op, pname, domain, node["const"])
+            if err:
+                raise ValueError(err)
         return {"op": op, "args": [normalise_ast(a, _depth=_depth + 1) for a in args]}
     raise ValueError(f"非法 AST 节点键: {sorted(keys)}")
 
@@ -239,6 +256,53 @@ class GPConfig:
     genome_len: int = 7
 
 
+# GP 的 opcode 表顺序决定「基因整数 → 算子」的映射。一旦重排，历史种子会解出
+# 另一批表达式；扩空间时把旧算子钉在原位、新算子追加到末尾，才谈得上「同一
+# 种子同一结果」。这不是又一张白名单：它只规定**顺序**，算子集合仍从注册表来。
+_GP_ORDER_HINT = (
+    "rank", "scale", "abs", "log", "sign",
+    "add", "sub", "mul", "div",
+    "ref", "delta", "mean", "std", "max", "min", "sum", "corr", "cov",
+)
+# 不进 GP 的算子分两类：
+# 1) 随机组合会炸——`product` 是窗口连乘，落在价格上时 1e5 的 30 次方即溢出 inf；
+#    `power` / `signed_power` 的右操作数一旦是表达式，量级不可控（close^close），
+#    或直接把自己变成 NaN（负底数的分数次幂）。
+# 2) 同义重复——`delay` 与 `ref` 在 operators.json 里指向同一个 impl_symbol，
+#    两个名字进同一张 opcode 表只会让 GP 把预算花在 `candidate_id` 去重上。
+# 3) 生成器形状不够——`quantile` 有两个参数位（当前 _OpCodes 只会追加一个
+#    窗口 const），`where_` 是三元算子（当前只支持一元/二元/带一元窗口）。
+#    它们在先验池与计划里可用，但不由搜索算法自动生成。
+# 4) 等值算子——`eq`/`ne` 作用在连续字段上时几乎只命中浮点/量化精度造成的
+#    孤立格子（campaign_r1 的 `eq(2, ts_mad(low,6))`：53010 格只有 1 个 1），
+#    会伪装成高 IC 的单名 artifact。保留给手写事件因子，但不让搜索自动生成。
+# 被排除的算子仍可写进先验池与计划，只是不由搜索算法自动生成。
+_GP_EXCLUDE = frozenset({
+    "product", "power", "signed_power", "delay", "quantile", "where_",
+    "eq", "ne",
+})
+
+
+def _gp_operator_order(reg) -> tuple[list[str], list[str], list[str]]:
+    """按注册表派生 GP 的三张算子表：(一元, 二元, 带参)。
+
+    单点维护：生成器与 beam 都读它，扩表后两边自动一致——旧实现各写一份
+    tuple，`corr`/`cov` 曾经只存在于生成器一侧，beam 永远搜不到它们。
+    """
+    def _order(pred) -> list[str]:
+        def ok(name: str) -> bool:
+            return name not in _GP_EXCLUDE and pred(reg.operators[name])
+
+        head = [n for n in _GP_ORDER_HINT if n in reg.operators and ok(n)]
+        tail = sorted(n for n in reg.operators if n not in head and ok(n))
+        return head + tail
+
+    unary = _order(lambda s: int(s.get("arity", 0)) == 1 and not s.get("param_domain"))
+    binary = _order(lambda s: int(s.get("arity", 0)) == 2 and not s.get("param_domain"))
+    windowed = _order(lambda s: bool(s.get("param_domain")))
+    return unary, binary, windowed
+
+
 class _OpCodes:
     """Opcode 表：前半终端、后半算子。索引即基因整数值。"""
 
@@ -247,25 +311,22 @@ class _OpCodes:
             {"field": f} for f in fields
         ] + [{"const": c} for c in _TERMINAL_CONST]
         self.ops: list[tuple[str, int, int | None]] = []  # (name, arity, window)
-        for name in ("rank", "scale", "abs", "log", "sign"):
-            if name in reg.operators:
-                self.ops.append((name, 1, None))
-        for name in ("add", "sub", "mul", "div"):
-            if name in reg.operators:
-                self.ops.append((name, 2, None))
-        # G6：带参算子从注册表的 `param_domain` 派生，不再手写 7 个名字。
-        # `corr` / `cov` 在 operators.json 里声明了 impl_symbol 与窗口域，旧生成器
-        # 却从不产出它们——声明与生成分叉，且没有任何检查点会报错（产物只是
-        # "搜索空间比文档小"）。arity 用 `spec["arity"] - 1`：注册表的 arity
-        # **含**末位窗口参数，decode 会再追加一个 const 窗口，直接传 registry
-        # 的 arity 会让 corr 多出一个参数。
-        _PARAM_ORDER = ("ref", "delta", "mean", "std", "max", "min", "sum",
-                        "corr", "cov")
-        for name in _PARAM_ORDER:
-            spec = reg.operators.get(name)
-            if not spec or not spec.get("param_domain"):
+        unary, binary, windowed = _gp_operator_order(reg)
+        for name in unary:
+            self.ops.append((name, 1, None))
+        for name in binary:
+            self.ops.append((name, 2, None))
+        # 带参算子：窗口域从注册表读，不手写。arity 用 `spec["arity"] - 1`——
+        # 注册表的 arity **含**末位窗口参数，decode 会再追加一个 const 窗口，
+        # 直接传注册表的 arity 会让 corr 多出一个参数。
+        for name in windowed:
+            spec = reg.operators[name]
+            domain_spec = spec.get("param_domain") or {}
+            if len(domain_spec) != 1:
+                # 多参数位算子（quantile）不能只追加一个 const 就交差：那会
+                # 生成 arity 不符的 AST，烧一次求值后必然被拒。
                 continue
-            domain = next(iter(spec["param_domain"].values()), {})
+            domain = next(iter(domain_spec.values()), {})
             lo = max(int(domain.get("min", cfg.window_min)), cfg.window_min)
             hi = min(int(domain.get("max", cfg.window_max)), cfg.window_max)
             arity = max(1, int(spec.get("arity", 2)) - 1)
@@ -687,9 +748,12 @@ def generate_beam_search(
     wins = [int(w) for w in (windows or [5, 10, 20]) if 1 <= int(w) <= 512] or [5, 10, 20]
 
     # 单步扩展：一元无参算子（对整式）+ 带参一元算子×窗口 + 与字段的二元组合。
-    unary = ("rank", "scale", "abs", "log", "sign")
-    param_unary = ("ref", "delay", "sum", "mean", "std", "delta")
-    binary = ("add", "sub", "mul", "div")
+    # 三张表与 GP 共用 `_gp_operator_order`，扩算子后两边同时变宽；带参算子只取
+    # registry arity==2 的那些（`corr`/`cov` 需要两个表达式，单步扩展给不出第二个，
+    # 强行产出只会得到 arity 不符的 AST，白烧一次求值）。
+    unary, binary, windowed = _gp_operator_order(reg)
+    param_unary = tuple(n for n in windowed
+                        if int(reg.operators[n].get("arity", 2)) == 2)
 
     def has_field(node: dict) -> bool:
         """AST 是否含至少一个 field。纯常量表达式无截面区分度，不扩展。"""
@@ -837,5 +901,271 @@ def describe_gp() -> AlgorithmSpec:
             "generations": {"type": "int", "min": 0},
             "max_depth": {"type": "int", "min": 1},
             "max_candidates": {"type": "int", "min": 1},
+        },
+    )
+
+
+# ---- 语义变异：从内置因子 Pool 做局部、可解释的邻域搜索 -----------------
+# 与 random_expression 的均匀采样互补：不从空表达式随机长起，而是拿已经在这条
+# 市场上有经济含义的锚点做小步变异。窗口翻倍/减半、同族字段互换、取负、截面
+# 标准化都是「仍可解释」的变换；不做跨族乱拼，避免生成只有 p 值没有故事的式子。
+_FIELD_SWAPS = (
+    ("close", "vwap"), ("high", "low"),
+    ("volume", "open_interest"), ("funding_rate", "basis"),
+)
+_MUTATIONS = ("window", "field", "neg", "rank", "scale", "smooth")
+# 时序平滑窗口：rolling R² / 效率比这类"路径依赖"因子逐 bar 重算会抖得厉害，
+# 平滑后信号方向不变、换手显著下降。trend_r2_20 在 h=10 下 ICIR/DSR 都够，
+# 唯一卡在 turnover=0.131 → cost_adj=0.00027 没过 0.0004 闸，平滑是针对这个
+# 短板的定向变异，不是放宽判据。
+_SMOOTH_WINDOWS = (3, 5)
+
+
+def _mutate_windows(node: Any, reg, scale: float) -> Any:
+    if not isinstance(node, Mapping):
+        return node
+    if "op" not in node or "args" not in node:
+        return node
+    args = [_mutate_windows(a, reg, scale) for a in node["args"]]
+    domains = list((reg.operators.get(node["op"], {}).get("param_domain") or {}).items())
+    if domains:
+        start = len(args) - len(domains)
+        for j, (pname, domain) in enumerate(domains):
+            if param_kind(domain) != "count" or start + j >= len(args):
+                continue
+            slot = args[start + j]
+            value = slot.get("const") if isinstance(slot, Mapping) else None
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            lo = int(domain.get("min", 1))
+            hi = int(domain.get("max", 512))
+            new = int(round(value * scale))
+            if lo <= new <= hi and new != value:
+                args[start + j] = {"const": new}
+    return {"op": node["op"], "args": args}
+
+
+def _swap_fields(node: Any, pairs: tuple[tuple[str, str], ...]) -> Any:
+    if isinstance(node, Mapping):
+        if set(node) == {"field"} and node["field"] in dict(pairs):
+            # 保持方向确定：a→b 与 b→a 都由同一对定义，不依赖 dict 顺序。
+            for a, b in pairs:
+                if node["field"] == a:
+                    return {"field": b}
+                if node["field"] == b:
+                    return {"field": a}
+            return dict(node)
+        if "op" in node and "args" in node:
+            return {"op": node["op"],
+                    "args": [_swap_fields(a, pairs) for a in node["args"]]}
+    return node
+
+
+def _wrap(node: dict, op: str) -> dict:
+    return {"op": op, "args": [node]}
+
+
+def generate_semantic_mutation(
+    *, fields: Sequence[str], seed: int, max_candidates: int = 40,
+    mutations: Sequence[str] | None = None, available_from: str = "",
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """内置因子 × 语义变异，确定性枚举。
+
+    窗口变异同时试 ×2 与 ÷2（只在域内、且原值变化时保留）；字段互换只作用在
+    面板确实存在的字段对上。`normalise_ast` 对每个产物再过一遍白名单/参数域，
+    非法产物直接丢弃，不靠「生成时应该没错」的假设。
+    """
+    from capability.factors import BUILTIN_FACTORS  # 延迟导入，避免与 factors 循环
+
+    reg = default_registry()
+    have = frozenset(str(f) for f in fields)
+    kinds = [str(m) for m in (mutations or _MUTATIONS)]
+    unknown = sorted(set(kinds) - set(_MUTATIONS))
+    if unknown:
+        raise ValueError(f"未知语义变异 {unknown}；可用 {list(_MUTATIONS)}")
+    pairs = tuple((a, b) for a, b in _FIELD_SWAPS if a in have and b in have)
+
+    # 先为**全部**内置因子生成变体，再按「第 k 种变异」轮转取用。
+    # 早期实现按因子字典序边生成边截断：max_candidates=60 时只摸到前十几个
+    # 因子，后面四十多个从未进入搜索——产物里写着 59 个先验，实际只搜了一个
+    # 字母序前缀，而日志里看不出这件事。轮转保证预算再小也能覆盖每个锚点。
+    variants_by_base: list[list[tuple[str, dict]]] = []
+    for base in sorted(BUILTIN_FACTORS):
+        ast = BUILTIN_FACTORS[base]
+        variants: list[tuple[str, dict]] = []
+        if "window" in kinds:
+            for scale in (2.0, 0.5):
+                variants.append((f"window{scale:g}", _mutate_windows(ast, reg, scale)))
+        if "field" in kinds and pairs:
+            variants.append(("field", _swap_fields(ast, pairs)))
+        for op in ("neg", "rank", "scale"):
+            if op in kinds:
+                variants.append((op, _wrap(ast, op)))
+        if "smooth" in kinds:
+            for w in _SMOOTH_WINDOWS:
+                variants.append((f"smooth{w}", _op("mean", ast, {"const": w})))
+        variants_by_base.append([
+            (kind, variant) for kind, variant in variants if variant != ast
+        ])
+
+    cands: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    attempted = 0
+    dropped = 0
+    max_per_round = max((len(v) for v in variants_by_base), default=0)
+    for slot in range(max_per_round):
+        for base, variants in zip(sorted(BUILTIN_FACTORS), variants_by_base):
+            if slot >= len(variants):
+                continue
+            kind, variant = variants[slot]
+            attempted += 1
+            try:
+                cand = make_candidate(
+                    variant, generator=f"semantic_mutation:{base}:{kind}@1",
+                    seed=seed, available_from=available_from,
+                    params_snapshot={"base": base, "mutation": kind},
+                    required_fields=sorted(_ast_fields(variant)),
+                )
+            except ValueError:
+                dropped += 1
+                continue
+            if cand["candidate_id"] in seen:
+                continue
+            seen.add(cand["candidate_id"])
+            cands.append(cand)
+            if len(cands) >= int(max_candidates):
+                break
+        if len(cands) >= int(max_candidates):
+            break
+    state = {
+        "algorithm": "semantic_mutation", "version": "1", "seed": seed,
+        "fields": sorted(have), "mutations": kinds,
+        "max_candidates": int(max_candidates),
+        "attempted": attempted, "dropped": dropped, "emitted": len(cands),
+    }
+    return cands, state
+
+
+# ---- 因子配对：跨经济族的内置因子做截面秩组合 ----------------------------
+# 语义变异是「一个因子的小步邻域」，GP/random 是「从零长出新式子」。中间缺一档：
+# 两个**已知有经济含义**的因子如何组合。这里固定 6 个正交锚点（资金费 carry、
+# 低波、动量、反转、已实现波动、量比），把 59 个内置因子逐一与它们做截面秩差 /
+# 秩比。秩先把量纲去掉，配对才有可比性；`div` 的分母加 0.1 是为了避免 rank=0
+# 时除零产生 inf（evaluate 会把它转 NaN，白白吃掉 coverage）。
+_BLEND_ANCHORS = (
+    "funding_carry14", "low_vol20", "mom20", "rev1", "rv20", "vol_ratio",
+)
+_BLEND_OPS = ("rank_spread", "rank_ratio")
+
+
+def _blend_ast(base: dict, anchor: dict, op: str) -> dict:
+    rb = _op("rank", _normalise_copy(base))
+    ra = _op("rank", _normalise_copy(anchor))
+    if op == "rank_spread":
+        return _op("sub", rb, ra)
+    if op == "rank_ratio":
+        return _op("div", rb, _op("add", ra, {"const": 0.1}))
+    raise ValueError(f"未知配对算子 {op!r}")
+
+
+def _normalise_copy(node: dict) -> dict:
+    """normalise_ast 返回新结构，绝不把内置因子表本身改掉。"""
+    return normalise_ast(node)
+
+
+def generate_factor_blend(
+    *, fields: Sequence[str], seed: int, max_candidates: int = 40,
+    available_from: str = "", anchors: Sequence[str] | None = None,
+    blend_ops: Sequence[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """跨族内置因子的截面秩配对，确定性枚举。
+
+    `anchors` 缺省用 `_BLEND_ANCHORS`；`blend_ops` 缺省 `rank_spread` /
+    `rank_ratio`。按 (算子, 锚点, 基准因子) 轮转，预算再小也能覆盖多个基准。
+    面板缺字段的配对直接跳过，不靠下游 evaluate 报错来发现。
+    """
+    from capability.factors import BUILTIN_FACTORS
+
+    have = frozenset(str(f) for f in fields)
+    names = sorted(BUILTIN_FACTORS)
+    anchor_names = [str(a) for a in (anchors or _BLEND_ANCHORS) if a in BUILTIN_FACTORS]
+    ops = [str(o) for o in (blend_ops or _BLEND_OPS)]
+    unknown = sorted(set(ops) - set(_BLEND_OPS))
+    if unknown:
+        raise ValueError(f"未知配对算子 {unknown}；可用 {list(_BLEND_OPS)}")
+
+    variants: list[tuple[int, int, int, str, str, dict]] = []
+    for oi, op in enumerate(ops):
+        for ai, anchor in enumerate(anchor_names):
+            for bi, base in enumerate(names):
+                if base == anchor:
+                    continue
+                required = _ast_fields(BUILTIN_FACTORS[base]) | _ast_fields(
+                    BUILTIN_FACTORS[anchor])
+                if not required <= have:
+                    continue
+                ast = _blend_ast(BUILTIN_FACTORS[base], BUILTIN_FACTORS[anchor], op)
+                variants.append((oi, ai, bi, base, anchor, ast))
+    # 先按基准因子、再按配对算子、最后按锚点轮转：锚点变化最快。
+    # 旧实现把 anchor 放在第一排序位：max_candidates=20 时全落在第一个锚点
+    # low_vol20 上，6 个经济锚点里 5 个从未进入搜索，注释却写着"覆盖多种
+    # 经济锚点"——产物里看不出这件事（generator 名字带 anchor，但日志没汇总）。
+    variants.sort(key=lambda v: (v[2], v[0], v[1]))
+
+    cands: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for _oi, _ai, _bi, base, anchor, ast in variants:
+        try:
+            cand = make_candidate(
+                ast, generator=f"factor_blend:{base}:{anchor}:{_oi}@1", seed=seed,
+                available_from=available_from,
+                params_snapshot={"base": base, "anchor": anchor,
+                                 "blend_op": ops[_oi]},
+                required_fields=sorted(_ast_fields(ast)),
+            )
+        except ValueError:
+            continue
+        if cand["candidate_id"] in seen:
+            continue
+        seen.add(cand["candidate_id"])
+        cands.append(cand)
+        if len(cands) >= int(max_candidates):
+            break
+    state = {
+        "algorithm": "factor_blend", "version": "1", "seed": seed,
+        "fields": sorted(have), "anchors": anchor_names, "blend_ops": ops,
+        "max_candidates": int(max_candidates),
+        "possible_pairs": len(variants), "emitted": len(cands),
+    }
+    return cands, state
+
+
+def describe_factor_blend() -> AlgorithmSpec:
+    reg = default_registry()
+    return AlgorithmSpec(
+        name="factor_blend", version="1", deterministic=True,
+        needs_seed=True, stateful=False, needs_fitness=False,
+        fit_window="mine_only", output_kind="expression",
+        operator_whitelist=tuple(sorted(reg.operators)),
+        max_candidates=40, budget_group="inherit",
+        param_schema={
+            "max_candidates": {"type": "int", "min": 1},
+            "anchors": {"type": "list", "item": {"type": "str"}},
+            "blend_ops": {"type": "list", "item": {"type": "str"}},
+        },
+    )
+
+
+def describe_semantic_mutation() -> AlgorithmSpec:
+    reg = default_registry()
+    return AlgorithmSpec(
+        name="semantic_mutation", version="1", deterministic=True,
+        needs_seed=True, stateful=False, needs_fitness=False,
+        fit_window="mine_only", output_kind="expression",
+        operator_whitelist=tuple(sorted(reg.operators)),
+        max_candidates=40, budget_group="inherit",
+        param_schema={
+            "max_candidates": {"type": "int", "min": 1},
+            "mutations": {"type": "list", "item": {"type": "str"}},
         },
     )

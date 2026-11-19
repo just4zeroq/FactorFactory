@@ -335,6 +335,11 @@ def build(call) -> dict:
         "bars_per_year_source": bpy_source,
         "oos_window": {"start": window[0].isoformat(), "end": window[1].isoformat()},
         "member_count": len(refs),
+        # 上面数的是**组合成员（因子）数**。每期实际持有的标的数由 allocate
+        # 的 `effective_members` 给出，编排层逐折回填到下面两格；能力层自己
+        # 拿不到 allocate 输出，不在这里猜值。两者名字故意不同，避免混用。
+        "min_oos_breadth": None,
+        "median_oos_breadth": None,
         "net_return": None,
         "net_sharpe": None,
         "turnover": None,

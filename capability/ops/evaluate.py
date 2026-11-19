@@ -39,7 +39,7 @@ import polars as pl
 import qweave as qw
 
 from capability.panel import Panel, array_digest
-from capability.registry import default_registry
+from capability.registry import default_registry, param_error
 from contracts.errors import E1003, E1004, E1015, E3003, FlowError
 
 VALUE_COL = "__v5_value__"
@@ -50,6 +50,12 @@ MAX_DEPTH = 64
 MAX_EMPTY_RATIO = 0.20
 # 常数暴露的相对判定阈值：通篇只差浮点末位的因子与常数因子没有区别。
 CONST_RTOL = 1e-12
+# 近常数/高并列暴露：主档占比过高时截面 rank 几乎全是并列，组合只剩极少数
+# 格子。实测两轮 campaign：
+#   r1 `eq(2, ts_mad(low,6))`：53010 格只有 1 个 1（99.998% 主档）；
+#   r2 `ts_min(ts_rank_raw(open,6),6)`：93.2% 为 0，certify member_count=1。
+# 两者统计闸都绿，但都不是横截面信号。主档 >= 90% 即在本层 fail-closed。
+NEAR_CONST_MAX_SHARE = 0.90
 _NAN_POLICIES = frozenset({"propagate", "drop"})
 _RESERVED_COLUMNS = frozenset({"symbol", "time"})
 
@@ -60,6 +66,9 @@ _RESERVED_COLUMNS = frozenset({"symbol", "time"})
 #   method        expr.<sym>()         arity 1
 #   method_binary expr.<sym>(rhs)      arity 2
 #   call_param    qw.<sym>(a, b, int)  arity 3
+#   call_binary   qw.<sym>(a, b)       arity 2
+#   method_param2 expr.<sym>(int, frac) arity 3（quantile 的双参数位）
+#   call_ternary  qw.<sym>(cond, a, b) arity 3
 _SHAPES: dict[str, tuple[str, int]] = {
     "ref": ("method_param", 2),
     "delay": ("method_param", 2),
@@ -69,17 +78,51 @@ _SHAPES: dict[str, tuple[str, int]] = {
     "max": ("method_param", 2),
     "min": ("method_param", 2),
     "delta": ("method_param", 2),
+    # v2 时序族：与上面同为「表达式 + 窗口」，区别只在 impl_symbol 指向的
+    # qweave 方法名。形状不跟着实现走，所以全部复用 method_param。
+    "ts_rank": ("method_param", 2),
+    "ts_argmax": ("method_param", 2),
+    "ts_argmin": ("method_param", 2),
+    "ts_skew": ("method_param", 2),
+    "ts_kurt": ("method_param", 2),
+    "ts_mad": ("method_param", 2),
+    "product": ("method_param", 2),
+    "decay_linear": ("method_param", 2),
+    "ema": ("method_param", 2),
+    "slope": ("method_param", 2),
+    "rsquare": ("method_param", 2),
+    "resi": ("method_param", 2),
     "rank": ("method", 1),
     "scale": ("method", 1),
     "abs": ("method", 1),
     "log": ("method", 1),
     "sign": ("method", 1),
+    "neg": ("method", 1),
     "add": ("method_binary", 2),
     "sub": ("method_binary", 2),
     "mul": ("method_binary", 2),
     "div": ("method_binary", 2),
     "corr": ("call_param", 3),
     "cov": ("call_param", 3),
+    # 逐点二元：qweave 只提供模块级函数（`qw.power(a, b)`），不挂在 Expr 上。
+    # 这两个是唯一「左右都是表达式、且没有窗口参数」的调用形状。
+    "power": ("call_binary", 2),
+    "signed_power": ("call_binary", 2),
+    # v3：qweave 0.6.2 里仍暴露、v2 漏掉的算子。比较算子返回 0/1 浮点，
+    # 与 where_ 组合才能写「只在上涨日统计」这类条件因子；elem_max/min
+    # 是模块级 qw.max/min（不是 ts_max/ts_min 的窗口版）。
+    "ts_count": ("method_param", 2),
+    "ts_rank_raw": ("method_param", 2),
+    "quantile": ("method_param2", 3),
+    "elem_max": ("call_binary", 2),
+    "elem_min": ("call_binary", 2),
+    "gt": ("method_binary", 2),
+    "lt": ("method_binary", 2),
+    "ge": ("method_binary", 2),
+    "le": ("method_binary", 2),
+    "eq": ("method_binary", 2),
+    "ne": ("method_binary", 2),
+    "where_": ("call_ternary", 3),
 }
 
 
@@ -165,13 +208,17 @@ def _check_registry(reg) -> None:
                 f"算子 {name!r} 的 impl_symbol={symbol!r} 不是 qweave 模块函数",
                 path=f"operators.{name}.impl_symbol",
             )
-        if shape in ("method_param", "call_param"):
-            if len(spec.get("param_domain") or {}) != 1:
-                raise FlowError(
-                    E1015,
-                    f"算子 {name!r} 是 {shape}，必须恰好声明 1 个参数域",
-                    path=f"operators.{name}.param_domain",
-                )
+        expected_params = {
+            "method_param": 1, "call_param": 1, "method_param2": 2,
+        }.get(shape, 0)
+        n_params = len(spec.get("param_domain") or {})
+        if n_params != expected_params:
+            raise FlowError(
+                E1015,
+                f"算子 {name!r} 是 {shape}，应声明 {expected_params} 个参数域，"
+                f"实际 {n_params} 个",
+                path=f"operators.{name}.param_domain",
+            )
 
 
 class _Builder:
@@ -262,15 +309,36 @@ class _Builder:
         if shape == "method_param":
             # 末位是整数参数（lag / window）：必须是 const 且落在 param_domain
             head = self.build(args[0], f"{path}.args[0]", depth + 1)
-            n = self._int_param(name, args[-1], spec, path)
+            n = self._const_param(name, args[-1], spec, path, 0, -1)
             return getattr(head, symbol)(n)
+
+        if shape == "method_param2":
+            # quantile(x, window, q)：两个参数位，窗口是 count、q 是 fraction。
+            # 两者都不是表达式，不能递归 build（构造成 Expr 只能被丢掉）。
+            head = self.build(args[0], f"{path}.args[0]", depth + 1)
+            n = self._const_param(name, args[-2], spec, path, 0, -2)
+            q = self._const_param(name, args[-1], spec, path, 1, -1)
+            return getattr(head, symbol)(n, q)
 
         if shape == "call_param":
             # 两表达式 + 窗口；窗口是参数，不构造成 Expr（构造了只能丢掉）
             left = self.build(args[0], f"{path}.args[0]", depth + 1)
             right = self.build(args[1], f"{path}.args[1]", depth + 1)
-            n = self._int_param(name, args[-1], spec, path)
+            n = self._const_param(name, args[-1], spec, path, 0, -1)
             return getattr(qw, symbol)(left, right, n)
+
+        if shape == "call_binary":
+            # 两表达式、无参数域：模块级二元函数（power / signed_power /
+            # elem_max / elem_min / group_*）。
+            left = self.build(args[0], f"{path}.args[0]", depth + 1)
+            right = self.build(args[1], f"{path}.args[1]", depth + 1)
+            return getattr(qw, symbol)(left, right)
+
+        if shape == "call_ternary":
+            # where_(cond, when_true, when_false)：cond 由比较算子产出 0/1。
+            parts = [self.build(a, f"{path}.args[{i}]", depth + 1)
+                     for i, a in enumerate(args)]
+            return getattr(qw, symbol)(*parts)
 
         left = self.build(args[0], f"{path}.args[0]", depth + 1)
         if shape == "method":
@@ -278,42 +346,31 @@ class _Builder:
         return getattr(left, symbol)(
             self.build(args[1], f"{path}.args[1]", depth + 1))
 
-    def _int_param(self, name: str, node: Any, spec: Mapping[str, Any],
-                   path: str) -> int:
+    def _const_param(self, name: str, node: Any, spec: Mapping[str, Any],
+                     path: str, param_index: int, arg_index: int) -> int | float:
+        """解析参数位：`arg_index` 是 AST 里的位置，`param_index` 是 param_domain 里的第几个。"""
         if not isinstance(node, Mapping) or set(node) != {"const"}:
             raise FlowError(
                 E1004,
-                f'算子 {name!r} 的末位参数必须是 {{"const": 整数}}，得到 {node!r}',
-                path=f"{path}.args[-1]",
-                hint="窗口/位移是参数，不是表达式",
+                f'算子 {name!r} 的参数必须是 {{"const": 数}}，得到 {node!r}',
+                path=f"{path}.args[{arg_index}]",
+                hint="窗口/分位点是参数，不是表达式",
             )
-        # 窗口节点也是 AST 的一个节点：`nodes` 报的是「这棵树有多大」，
-        # 少算一个参数节点会让两个规模不同的候选报出同样的节点数。
+        # 参数节点也计入 AST 规模；少算会让不同大小的候选报出同样的节点数。
         self.nodes += 1
-        value = node["const"]
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise FlowError(
-                E1004, f"算子 {name!r} 的参数必须是整数，得到 {value!r}",
-                path=f"{path}.args[-1]",
-            )
-        domains = spec.get("param_domain") or {}
-        if len(domains) != 1:
+        domains = list((spec.get("param_domain") or {}).items())
+        if param_index >= len(domains):
             raise FlowError(
                 E1015,
-                f"算子 {name!r} 声明了 {len(domains)} 个参数域，绑定只支持 1 个",
-                path=path,
+                f"算子 {name!r} 只声明了 {len(domains)} 个参数域，取第 {param_index} 个失败",
+                path=f"{path}.args[{arg_index}]",
             )
-        (pname, domain), = domains.items()
-        lo, hi = domain.get("min"), domain.get("max")
-        if lo is not None and value < int(lo):
-            raise FlowError(
-                E1004, f"{name}.{pname}={value} < 下界 {lo}", path=f"{path}.args[-1]",
-            )
-        if hi is not None and value > int(hi):
-            raise FlowError(
-                E1004, f"{name}.{pname}={value} > 上界 {hi}", path=f"{path}.args[-1]",
-            )
-        return int(value)
+        pname, domain = domains[param_index]
+        value = node["const"]
+        err = param_error(name, pname, domain, value)
+        if err:
+            raise FlowError(E1004, err, path=f"{path}.args[{arg_index}]")
+        return value
 
 
 def _to_long(panel: Panel, fields: set[str]):
@@ -440,6 +497,20 @@ def build(call) -> dict:
             f"求值结果是常数暴露（极差 {spread:g}）",
             path="evaluate.outputs.values",
             hint="常数因子没有截面区分度；它只能抬高 n_trials，不能产生信号",
+        )
+
+    # ---- 退化检查：近常数（单格/单名）暴露 -----------------------------
+    # 极差检查挡不住「53009 个 0 + 1 个 1」：它既有非零极差、也有 0.03 的 IC，
+    # 但截面几乎没有排序信息，组合只剩一个名字。比对取值档数与主档占比，
+    # 在搜索入口就把它挡掉，而不是等 certify 报 member_count=1 才发现。
+    levels, counts = np.unique(finite, return_counts=True)
+    top_share = float(counts.max()) / max(1, int(finite.size))
+    if top_share >= NEAR_CONST_MAX_SHARE:
+        raise FlowError(
+            E3003,
+            f"求值结果过度集中（{levels.size} 档取值，主档占 {top_share:.4%}）",
+            path="evaluate.outputs.values",
+            hint="截面 rank 几乎全是并列；二分/秩/滚动最小值这类组合容易塌成单名押注",
         )
 
     # ---- 退化检查：空截面 ---------------------------------------------

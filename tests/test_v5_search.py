@@ -390,8 +390,13 @@ def test_param_ops_come_from_the_registry():
     `corr` / `cov` 在 operators.json 里有 impl_symbol 与窗口域，旧生成器却
     只手写 7 个名字，于是它们**永远搜不到**——声明与生成分叉，且没有任何
     检查点会报错。
+
+    v2 扩表后多了一条出口：算子可以「声明但不进 GP」，但必须登记在
+    `_GP_EXCLUDE` 里并写明理由（溢出/NaN/同义重复）。排除表本身被这条测试
+    钉住——想放宽搜索空间就必须同时改测试，否则「往排除表里塞名字」就能
+    让断言永远通过。
     """
-    from capability.mining import GPConfig, _OpCodes
+    from capability.mining import GPConfig, _GP_EXCLUDE, _OpCodes
     from capability.registry import default_registry
 
     reg = default_registry()
@@ -402,7 +407,19 @@ def test_param_ops_come_from_the_registry():
                  if name in reg.operators}
     declared = {spec["impl_symbol"] for spec in reg.operators.values()
                 if spec.get("param_domain")}
-    assert declared <= generated, f"注册表声明但生成器永不产出: {declared - generated}"
+    excluded = {reg.operators[n]["impl_symbol"] for n in _GP_EXCLUDE
+                if n in reg.operators}
+    assert set(_GP_EXCLUDE) == {
+        "product", "power", "signed_power", "delay", "quantile", "where_",
+        "eq", "ne",
+    }
+    assert declared - excluded <= generated, \
+        f"注册表声明但生成器永不产出: {declared - excluded - generated}"
+    # 排除表不能顺手带走真该搜的算子：带参算子中**符号**真正丢失的只能有
+    # `product`（`delay` 与 `ref` 同符号；`quantile` 双参数位当前生成器不支持）。
+    lost = {reg.operators[n]["impl_symbol"] for n in _GP_EXCLUDE
+            if n in reg.operators and reg.operators[n].get("param_domain")} - generated
+    assert lost == {"product", "quantile"}, f"排除表带走了本可搜索的算子: {lost}"
     assert {"correlation", "covariance"} <= generated
 
 

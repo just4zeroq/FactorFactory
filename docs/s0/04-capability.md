@@ -592,7 +592,7 @@ run(call)  →  实现内部：run(call.composed[i])   # 只能执行预构造�
 
 节点级缓存的键是 `H(node_ast_digest + panel_digest + asof + operator_version)`，**必须**含后三项：只按 AST 存会让换数据版本后命中旧值。**但 `node_cache` 默认关闭，且本阶段不接受 `true`**（`E1004`）：实测 93 KB 节点落盘写+读 13–16 ms，而同批重算均摊 0.2 ms/表达式（当前 23.7k 行面板）——落盘净亏 65 倍。盈亏线在 250k 行（均摊 1.7 ms，仍亏）与 4M 行（59.5 ms，已赚）之间，需在该规模重新实测。当前规模只依赖求值内核的同批 CSE，见 `s0/02-crosscutting.md` §7。**给一个「开了但没生效」的开关比没有这个开关更糟。**
 
-求值内核是 **qweave**（Rust DAG，自带公共子表达式复用、slot 复用与节点级并行），本系统只自研三件：算子白名单表（遍历 AST 校验）、JSON AST → `Expr` 的构造器（约 200 行：19 个算子的调用形状表、注册表三向比对、递归构造 + 校验一体）、跨调用缓存键。见 `07-components.md` §4 与 `08-reuse-audit.md` §10。
+求值内核是 **qweave**（Rust DAG，自带公共子表达式复用、slot 复用与节点级并行），本系统只自研三件：算子白名单表（遍历 AST 校验）、JSON AST → `Expr` 的构造器（约 240 行：34 个算子的调用形状表、注册表三向比对、递归构造 + 校验一体）、跨调用缓存键。见 `07-components.md` §4 与 `08-reuse-audit.md` §10。
 
 **为什么构造器是 200 行而不是 20 行**：qweave 的 `PyExpr` 方法名与算义词不同（`sum→ts_sum`、`mean→ts_mean`、`ref→delay`、`add→__add__`、`corr→correlation`），且标量必须 `qw.lit()` 包装、`expr - 1.0` 直接抛 `TypeError`。这层映射必须显式写在表里并**逐条验证符号真实存在**，否则白名单上写着支持、运行到那一步才发现没有绑定。`group_rank` / `group_neutralize` 因此被移出注册表：它们要求 group 列是 string/int，而 `Panel` 强制 float64，在当前面板表示下永远不可用——留一个必然抛错的算子比删掉它更危险。
 

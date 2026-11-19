@@ -51,7 +51,7 @@ CALIBER_FIELDS = caliber_field_names()
 # 构成性参数：出现在 overrides 里且未放行 → E1005
 CONSTITUTIVE_TOPS = frozenset({
     "supply", "caliber", "boundary", "panel", "target", "search",
-    "evidence", "verdict", "portfolio", "certify",
+    "evidence", "verdict", "portfolio", "certify", "evaluation",
 })
 # 不进任何指纹的操作性字段
 OPERATION_KEYS = frozenset({"operations", "compiled_at"})

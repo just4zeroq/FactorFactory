@@ -130,7 +130,9 @@ def test_evaluate_ternary_corr_runs():
 
 # ---------------------------------------------------------------- 白名单
 def test_evaluate_rejects_unknown_operator():
-    assert _code(lambda: _eval(_op("ts_rank", _f("close"), _c(3)))) == E1015
+    # `ts_median` 故意不存在：qweave 没有这个原语。用真算子的名字（例如
+    # `ts_rank`）会让这条测试在扩表后变成「测的是算不出来」，而不是「不在白名单」。
+    assert _code(lambda: _eval(_op("ts_median", _f("close"), _c(3)))) == E1015
 
 
 def test_evaluate_rejects_wrong_arity():

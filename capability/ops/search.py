@@ -26,8 +26,12 @@ from capability.inference import ic_series
 from capability.params import implementation_defaults
 from capability.mining import (
     AlgorithmSpec, GPConfig, _FIT_LOCK, dedup_candidates,
-    describe_beam_search, describe_gp, describe_random, describe_template_enum,
-    generate_beam_search, generate_gp, generate_random, generate_template_enum,
+    describe_beam_search, describe_factor_blend, describe_gp, describe_random,
+    describe_semantic_mutation,
+    describe_template_enum,
+    generate_beam_search, generate_factor_blend, generate_gp, generate_random,
+    generate_semantic_mutation,
+    generate_template_enum,
     make_candidate,
 )
 from capability.panel import Panel
@@ -42,7 +46,8 @@ def _algorithms() -> dict[str, AlgorithmSpec]:
     均匀采样基线 —— GP 若赢不过它，进化的价值就不成立。
     """
     specs = (describe_gp(), describe_random(), describe_template_enum(),
-             describe_beam_search())
+             describe_beam_search(), describe_semantic_mutation(),
+             describe_factor_blend())
     return {spec.name: spec for spec in specs}
 
 
@@ -266,7 +271,12 @@ def _label(call) -> Mapping[str, Any]:
     return data
 
 
-_FITNESS_MODES = frozenset({"rank_ic", "raw_gross"})
+_FITNESS_MODES = frozenset({"rank_ic", "raw_gross", "net_proxy"})
+# net_proxy 的换手惩罚系数：每单位换手扣掉的毛收益。成本闸 0.0004/bar、
+# 高换手候选 turnover~0.13、典型 gross~0.0005–0.001；λ=0.004 时惩罚
+# 0.00052，足以让 GP 把「毛收益略高但换手翻倍」的表达式排在低换手之后。
+# 它只是搜索目标的形状参数，不是判据——放行仍由 verdict 的真实净成本决定。
+DEFAULT_TURNOVER_LAMBDA = 0.004
 
 
 def _gross_from_raw(values: np.ndarray, valid: np.ndarray,
@@ -303,8 +313,56 @@ def _gross_from_raw(values: np.ndarray, valid: np.ndarray,
     return float(np.mean(ls[has]))
 
 
+def _net_proxy_from_raw(values: np.ndarray, valid: np.ndarray,
+                        raw: np.ndarray, lambda_turn: float,
+                        quantile: float = 1.0 / 3.0) -> float:
+    """净收益代理 = |分位多空毛收益| − λ·换手，供 GP 排序。
+
+    换手是持仓序列的纯结构属性（`0.5·Σ|Δw|` 的每期均值），与 verdict 的任何
+    统计结论无关——这里只用它塑造搜索方向，绝不产生 p 值/DSR/放行判断。
+    `observe._longshort` 已确认成本闸卡死高换手候选，但 `raw_gross` fitness
+    看不到换手，导致搜索系统性偏向「毛收益高但换手爆表」的表达式，与 verdict
+    的目标错位。net_proxy 把换手纳入搜索视野，缩小这个错位。
+
+    换手口径与 allocate 一致：只在再平衡网格行重算目标权重，中间行冻结；
+    q=1/3 两头等权，归一后单侧换手 0.5·mean|Δw|。这里用逐 bar 网格（不冻结）
+    作为廉价代理——它高估了低频再平衡的实际换手，但作为**相对排序**信号够用，
+    真实净成本仍由 S4 的 allocate+backtest 说了算。
+    """
+    t_len, n_sym = values.shape
+    if raw.shape != values.shape or valid.shape != values.shape:
+        return -1.0
+    k = max(1, int(round(n_sym * quantile)))
+    ls = np.zeros(t_len, dtype="float64")
+    has = np.zeros(t_len, dtype=bool)
+    prev_w: np.ndarray | None = None
+    turn_sum = 0.0
+    turn_n = 0
+    for t in range(t_len):
+        row_ok = valid[t] & np.isfinite(values[t]) & np.isfinite(raw[t])
+        idx = np.flatnonzero(row_ok)
+        if idx.size < 2 * k:
+            continue
+        order = idx[np.argsort(values[t, idx], kind="stable")]
+        w = np.zeros(n_sym, dtype="float64")
+        w[order[-k:]] = 1.0 / k
+        w[order[:k]] = -1.0 / k
+        if prev_w is not None:
+            turn_sum += 0.5 * float(np.abs(w - prev_w).sum())
+            turn_n += 1
+        prev_w = w
+        ls[t] = float(np.mean(raw[t, order[-k:]]) - np.mean(raw[t, order[:k]]))
+        has[t] = True
+    if not has.any():
+        return -1.0
+    gross = abs(float(np.mean(ls[has])))
+    turnover = turn_sum / max(turn_n, 1)
+    return gross - float(lambda_turn) * turnover
+
+
 def _make_fitness(call, panel: Panel, score: np.ndarray,
-                  *, mode: str = "rank_ic", raw: np.ndarray | None = None):
+                  *, mode: str = "rank_ic", raw: np.ndarray | None = None,
+                  turnover_lambda: float = DEFAULT_TURNOVER_LAMBDA):
     """构造 fitness 闭包：调同一个 evaluate + 去重登记 + 返回目标值。
 
     eval 用 `runtime.run` 走与 Evidence 完全相同的六步校验（白名单、指纹、
@@ -320,8 +378,8 @@ def _make_fitness(call, panel: Panel, score: np.ndarray,
         raise FlowError(E1004, f"未知 fitness_mode={mode!r}",
                         path="search.params.fitness_mode",
                         hint=f"可用 {sorted(_FITNESS_MODES)}")
-    if mode == "raw_gross" and (raw is None or raw.shape != score.shape):
-        raise FlowError(E3003, "fitness_mode=raw_gross 需要 label.raw 且与 score 同形",
+    if mode in ("raw_gross", "net_proxy") and (raw is None or raw.shape != score.shape):
+        raise FlowError(E3003, f"fitness_mode={mode!r} 需要 label.raw 且与 score 同形",
                         path="search.inputs.label.raw",
                         hint="label 工位必须产出 raw（变换前标签收益）")
 
@@ -364,6 +422,8 @@ def _make_fitness(call, panel: Panel, score: np.ndarray,
         calls["ok"] += 1
         if mode == "raw_gross":
             return abs(_gross_from_raw(values, valid, raw))
+        if mode == "net_proxy":
+            return _net_proxy_from_raw(values, valid, raw, turnover_lambda)
         mask = valid & np.isfinite(score)
         if not mask.any():
             return -1.0
@@ -449,11 +509,34 @@ def _run_beam_search(*, sub, fields, seed, fitness, as_of, defaults):
     )
 
 
+def _run_semantic_mutation(*, sub, fields, seed, fitness, as_of, defaults):
+    _ = fitness  # 确定性邻域枚举，不读适应度
+    return generate_semantic_mutation(
+        fields=fields, seed=seed, available_from=as_of,
+        max_candidates=int(sub.get("max_candidates", defaults.get(
+            "max_candidates", implementation_defaults("search")["max_candidates"]))),
+        mutations=sub.get("mutations"),
+    )
+
+
+def _run_factor_blend(*, sub, fields, seed, fitness, as_of, defaults):
+    _ = fitness  # 确定性跨族配对，不读适应度
+    return generate_factor_blend(
+        fields=fields, seed=seed, available_from=as_of,
+        max_candidates=int(sub.get("max_candidates", defaults.get(
+            "max_candidates", implementation_defaults("search")["max_candidates"]))),
+        anchors=sub.get("anchors"),
+        blend_ops=sub.get("blend_ops"),
+    )
+
+
 _RUNNERS.update({
     "gp_symbolic": _run_gp,
     "random_expression": _run_random,
     "template_enum": _run_template_enum,
     "beam_search": _run_beam_search,
+    "semantic_mutation": _run_semantic_mutation,
+    "factor_blend": _run_factor_blend,
 })
 
 
@@ -481,8 +564,13 @@ def build(call) -> dict:
     # 每个算法各自建一个闭包会让同一表达式被算两次、n_trials 虚高，
     # 而 DSR 的门槛正是 n_trials 的函数——那等于用记账错误去放宽判据。
     fitness_mode = str(params.get("fitness_mode", "rank_ic"))
+    turnover_lambda = float(params.get("turnover_lambda", DEFAULT_TURNOVER_LAMBDA))
+    if not np.isfinite(turnover_lambda) or turnover_lambda < 0.0:
+        raise FlowError(E1004, "turnover_lambda 必须是非负有限数",
+                        path="search.params.turnover_lambda")
     fitness, seen, calls = _make_fitness(
-        call, panel, score, mode=fitness_mode, raw=label.get("raw"))
+        call, panel, score, mode=fitness_mode, raw=label.get("raw"),
+        turnover_lambda=turnover_lambda)
 
     prior_cands, prior_skipped, as_of = _prior_candidates(call)
 

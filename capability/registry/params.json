@@ -366,8 +366,14 @@
         "fitness_mode": {
           "type": "enum",
           "required": false,
-          "values": ["rank_ic", "raw_gross"],
-          "doc": "搜索目标：rank_ic=|RankIC|（缺省，历史兼容，厚尾下有假阳性）；raw_gross=分位多空真实算术收益均值（与 observe/verdict 的 raw 口径同轴，避免 IC 正但真实亏的陷阱）"
+          "values": ["rank_ic", "raw_gross", "net_proxy"],
+          "doc": "搜索目标：rank_ic=|RankIC|（缺省，厚尾下有假阳性）；raw_gross=分位多空真实算术收益；net_proxy=|毛收益|-turnover_lambda*换手（让搜索避开高换手区域，与净成本判据同轴）"
+        },
+        "turnover_lambda": {
+          "type": "float",
+          "required": false,
+          "min": 0.0,
+          "doc": "net_proxy 的换手惩罚系数，缺省 0.004；仅当 fitness_mode=net_proxy 时生效"
         }
       }
     },

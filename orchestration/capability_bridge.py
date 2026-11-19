@@ -189,6 +189,31 @@ def _max_drawdown(net: np.ndarray) -> float:
     return float(np.min(drawdown))
 
 
+def _fold_market_stats(fold_price: np.ndarray) -> tuple[float, float]:
+    """OOS 折的市场状态代理：等权市场收益与逐 bar 截面波动。
+
+    这是**描述量**，不进任何判据，也不参与持仓/权重计算：只在证书里给出
+    「这一折发生在涨/跌、高/低波动环境」的事实，供 scorecard 做 regime
+    子样本汇总。用等权价格收益而不是策略净值，避免用被诊断对象自己定义 regime。
+    """
+    price = np.asarray(fold_price, dtype="float64")
+    if price.ndim != 2 or price.shape[0] < 2 or price.shape[1] < 1:
+        return 0.0, 0.0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        step = price[1:] / price[:-1] - 1.0
+        valid = np.isfinite(step)
+        counts = valid.sum(axis=1)
+        cross = np.where(counts >= 2,
+                         np.where(valid, step, 0.0).sum(axis=1)
+                         / np.maximum(counts, 1), np.nan)
+        total = price[-1] / price[0] - 1.0
+    cross = cross[np.isfinite(cross)]
+    total = total[np.isfinite(total)]
+    market_return = float(np.mean(total)) if total.size else 0.0
+    market_vol = float(np.std(cross, ddof=1)) if cross.size >= 2 else 0.0
+    return market_return, market_vol
+
+
 def _panel_times(panel: Any, *, station: str) -> np.ndarray:
     """Panel 时间轴 → `backtest` 的 `time` 输入（UTC 纳秒，只读副本）。
 
@@ -922,8 +947,10 @@ class CapabilityBridge:
         bpy = float(metrics.get("bars_per_year") or CALENDAR_DAYS_PER_YEAR)
         periods_all: list[np.ndarray] = []
         turnovers: list[np.ndarray] = []
+        breadth: list[int] = []
         cost_total = {"fee": 0.0, "slippage": 0.0, "funding": 0.0, "total": 0.0}
         positive = 0
+        market_stats: list[tuple[float, float]] = []
 
         for entry in folds_detail:
             if not isinstance(entry, dict):
@@ -942,6 +969,8 @@ class CapabilityBridge:
             fold_time = np.ascontiguousarray(times[b0:b1])
             fold_funding = (np.ascontiguousarray(funding[b0:b1])
                             if funding is not None else None)
+            market_return, market_vol = _fold_market_stats(fold_price)
+            market_stats.append((market_return, market_vol))
 
             a_impl, a_ver = self._resolve_impl("allocate", "", "")
             alloc_call = Call.create(
@@ -961,6 +990,12 @@ class CapabilityBridge:
             if not isinstance(position, np.ndarray):
                 raise FlowError(E3003, "allocate 未返回持仓数组",
                                 path="allocate.outputs.weights")
+            # `certify.metrics.member_count` 数的是组合里的**因子**个数，不是每期
+            # 持有的**标的**数；后者是 allocate 的 `effective_members`（各 bar
+            # 非零点数的最小值）。两者分开落盘，因子数不能冒充组合宽度。
+            fold_members = int(alloc_out.get("effective_members") or 0)
+            entry["effective_members"] = fold_members
+            breadth.append(fold_members)
 
             b_impl, b_ver = self._resolve_impl("backtest", "", "")
             bt_call = Call.create(
@@ -1000,8 +1035,25 @@ class CapabilityBridge:
             entry["cost_total"] = fold_cost["total"]
             entry["cost_breakdown"] = fold_cost
             entry["net_ref"] = str(bt_out.get("net_return_ref", ""))
+            entry["market_return"] = market_return
+            entry["market_vol"] = market_vol
             if fold_ret > 0.0:
                 positive += 1
+
+        # regime 标签只在全部折都算完后才定：高低波动是**折间相对**阈值，
+        # 逐折当场比较会让第一折永远没有参照，也让不同折数的证书口径漂移。
+        vols = [vol for _ret, vol in market_stats if np.isfinite(vol) and vol > 0]
+        vol_cut = float(np.median(vols)) if vols else 0.0
+        for entry, (market_return, market_vol) in zip(folds_detail, market_stats):
+            if not isinstance(entry, dict):  # pragma: no cover - 上方已校验
+                continue
+            entry["regime"] = {
+                "trend": "up" if market_return > 0 else "down",
+                "vol": "high" if market_vol >= vol_cut and vol_cut > 0 else "low",
+                "market_return": market_return,
+                "market_vol": market_vol,
+                "vol_cut": vol_cut,
+            }
 
         combined = np.concatenate(periods_all) if periods_all else np.zeros(0)
         total_periods = int(combined.size)
@@ -1014,6 +1066,12 @@ class CapabilityBridge:
         metrics["max_drawdown"] = _max_drawdown(combined)
         metrics["period_count"] = total_periods
         metrics["positive_folds"] = int(positive)
+        # 组合宽度取各折最小值：只要有一折只剩一两个名字，这个策略就不是
+        # 「横截面 alpha」，而是单名押注，不能靠其他折的宽持仓平均掉。
+        metrics["min_oos_breadth"] = int(min(breadth)) if breadth else 0
+        metrics["median_oos_breadth"] = (
+            float(np.median(breadth)) if breadth else 0.0
+        )
         metrics["cost_breakdown"] = cost_total
         metrics["cost_per_period"] = float(cost_total["total"] / max(total_periods, 1))
 
