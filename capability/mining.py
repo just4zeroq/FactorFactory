@@ -656,6 +656,117 @@ def generate_template_enum(
     return cands, state
 
 
+def generate_beam_search(
+    *,
+    cfg: GPConfig,
+    fields: Sequence[str],
+    seed: int,
+    fitness: Callable[[Mapping[str, Any]], float] | None,
+    available_from: str = "",
+    beam_width: int = 8,
+    depth: int = 3,
+    windows: Sequence[int] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """集束搜索符号回归（`beam_search`）：沿 fitness 梯度确定性构造表达式。
+
+    与 GP 的随机进化正交：GP 靠选择/交叉/变异在基因空间随机游走，本算法从
+    终端出发，每轮对 beam 中每个表达式枚举**所有单步扩展**（一元算子、与字段
+    的二元组合、带参算子×窗口），逐个求 fitness，去重后保留 top-`beam_width`
+    个，迭代 `depth` 轮。确定性（同 seed 同结果），无随机。
+
+    返回所有被 fitness 评估过的候选（去重），不只是最终 beam——让 Evidence/DSR
+    看到真实的试验数（算法无法少记账）。无 fitness 时退化为「宽度优先枚举
+    前 depth 层」，不冒充有指导的搜索。
+    """
+    reg = default_registry()
+    have = tuple(sorted(f for f in fields if f in reg.fields))
+    if not have:
+        return [], {"algorithm": "beam_search", "reason": "no_fields"}
+    beam_width = max(2, int(beam_width))
+    depth = max(1, int(depth))
+    wins = [int(w) for w in (windows or [5, 10, 20]) if 1 <= int(w) <= 512] or [5, 10, 20]
+
+    # 单步扩展：一元无参算子（对整式）+ 带参一元算子×窗口 + 与字段的二元组合。
+    unary = ("rank", "scale", "abs", "log", "sign")
+    param_unary = ("ref", "delay", "sum", "mean", "std", "delta")
+    binary = ("add", "sub", "mul", "div")
+
+    def has_field(node: dict) -> bool:
+        """AST 是否含至少一个 field。纯常量表达式无截面区分度，不扩展。"""
+        if "field" in node:
+            return True
+        return any(has_field(a) for a in node.get("args", [])
+                   if isinstance(a, dict))
+
+    def expand(ast: dict) -> list[dict]:
+        if not has_field(ast):
+            return []  # 纯常量扩展只会得到更多常量，浪费预算
+        out: list[dict] = []
+        for op in unary:
+            out.append({"op": op, "args": [ast]})
+        for op in param_unary:
+            for w in wins:
+                out.append({"op": op, "args": [ast, {"const": w}]})
+        for f in have:
+            for op in binary:
+                out.append({"op": op, "args": [ast, {"field": f}]})
+        return out
+
+    seen_ast: dict[str, dict] = {}
+    scored: dict[str, float] = {}
+    calls = {"total": 0, "ok": 0, "failed": 0}
+
+    def score(ast: dict) -> float:
+        try:
+            norm = normalise_ast(ast)
+            key = json.dumps(norm, sort_keys=True, separators=(",", ":"))
+        except ValueError:
+            return -1.0
+        if key in seen_ast:
+            return scored.get(key, -1.0)
+        seen_ast[key] = norm
+        if fitness is None:
+            scored[key] = 0.0
+            return 0.0
+        val = fitness(make_candidate(
+            norm, seed=seed, generator="beam_search@1", available_from=available_from))
+        calls["total"] += 1
+        if val > -1.0:
+            calls["ok"] += 1
+        else:
+            calls["failed"] += 1
+        scored[key] = float(val)
+        return scored[key]
+
+    # 初始 beam：每个字段本身 + 一个常量种子。
+    beam = [{"field": f} for f in have] + [{"const": 1.0}]
+    for a in beam:
+        score(a)
+    for _ in range(depth):
+        neighbours: list[dict] = []
+        for a in beam:
+            neighbours.extend(expand(a))
+        for a in neighbours:
+            score(a)
+        # 按 fitness 降序保留 top-B；同分按内容键定序（确定性）。
+        ranked = sorted(seen_ast.keys(),
+                        key=lambda k: (-scored.get(k, -1.0), k))
+        beam = [seen_ast[k] for k in ranked[:beam_width]]
+
+    ranked = sorted(seen_ast.keys(), key=lambda k: (-scored.get(k, -1.0), k))
+    cands = [make_candidate(
+        seen_ast[k], generator="beam_search@1", seed=seed,
+        available_from=available_from,
+        params_snapshot={"beam_width": beam_width, "depth": depth, "windows": wins},
+    ) for k in ranked[:cfg.max_candidates]]
+    fitted_state = {
+        "algorithm": "beam_search", "version": "1", "seed": seed,
+        "beam_width": beam_width, "depth": depth, "windows": wins,
+        "fields": list(have), "evaluated": len(seen_ast), "calls": calls,
+    }
+    return cands, fitted_state
+
+
 def describe_template_enum() -> AlgorithmSpec:
     return AlgorithmSpec(
         name="template_enum", version="1", deterministic=True, needs_seed=True,
@@ -686,6 +797,26 @@ def describe_random() -> AlgorithmSpec:
             "max_candidates": {"type": "int", "min": 1},
             "max_depth": {"type": "int", "min": 1},
             "genome_len": {"type": "int", "min": 1},
+        },
+    )
+
+
+def describe_beam_search() -> AlgorithmSpec:
+    reg = default_registry()
+    return AlgorithmSpec(
+        name="beam_search", version="1", deterministic=True, needs_seed=True,
+        stateful=False, needs_fitness=True,
+        fitness_objectives=("search_fitness",),
+        fit_window="mine_only",
+        output_kind="expression",
+        operator_whitelist=tuple(sorted(reg.operators)),
+        max_candidates=40,
+        budget_group="inherit",
+        param_schema={
+            "beam_width": {"type": "int", "min": 2},
+            "depth": {"type": "int", "min": 1},
+            "windows": {"type": "list", "item": {"type": "int", "min": 1, "max": 512}},
+            "max_candidates": {"type": "int", "min": 1},
         },
     )
 

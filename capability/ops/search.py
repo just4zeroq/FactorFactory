@@ -26,8 +26,9 @@ from capability.inference import ic_series
 from capability.params import implementation_defaults
 from capability.mining import (
     AlgorithmSpec, GPConfig, _FIT_LOCK, dedup_candidates,
-    describe_gp, describe_random, describe_template_enum,
-    generate_gp, generate_random, generate_template_enum, make_candidate,
+    describe_beam_search, describe_gp, describe_random, describe_template_enum,
+    generate_beam_search, generate_gp, generate_random, generate_template_enum,
+    make_candidate,
 )
 from capability.panel import Panel
 from capability.registry import default_registry
@@ -40,7 +41,8 @@ def _algorithms() -> dict[str, AlgorithmSpec]:
     `gp_symbolic` 用适应度驱动的进化，`random_expression` 是同一表达式空间的
     均匀采样基线 —— GP 若赢不过它，进化的价值就不成立。
     """
-    specs = (describe_gp(), describe_random(), describe_template_enum())
+    specs = (describe_gp(), describe_random(), describe_template_enum(),
+             describe_beam_search())
     return {spec.name: spec for spec in specs}
 
 
@@ -436,10 +438,22 @@ def _run_template_enum(*, sub, fields, seed, fitness, as_of, defaults):
     )
 
 
+def _run_beam_search(*, sub, fields, seed, fitness, as_of, defaults):
+    cfg = _config(sub, defaults, fields)
+    return generate_beam_search(
+        cfg=cfg, fields=fields, seed=seed, fitness=fitness,
+        available_from=as_of,
+        beam_width=int(sub.get("beam_width", 8)),
+        depth=int(sub.get("depth", 3)),
+        windows=sub.get("windows"),
+    )
+
+
 _RUNNERS.update({
     "gp_symbolic": _run_gp,
     "random_expression": _run_random,
     "template_enum": _run_template_enum,
+    "beam_search": _run_beam_search,
 })
 
 
