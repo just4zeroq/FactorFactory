@@ -100,6 +100,7 @@
           }, "doc": "唯一的开放名字空间；每个 name 必须已在能力目录注册"
         },
         "prior_pool": { "type": "list", "item": { "type": "str" }, "required": false },
+        "fitness_mode": { "type": "enum", "values": ["rank_ic", "raw_gross"], "required": false, "doc": "搜索目标：rank_ic=|RankIC|（缺省）；raw_gross=分位多空真实算术收益（避免厚尾 rank 假阳性）" },
         "trial_family": { "type": "str", "required": true, "doc": "试验族；DSR/BH 只在该族内累计" },
         "seed": { "type": "int", "required": true }
       }

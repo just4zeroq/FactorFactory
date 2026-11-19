@@ -156,6 +156,10 @@ def _search_params(plan: Mapping[str, Any]) -> dict[str, Any]:
         out["prior_pool"] = [str(x) for x in block["prior_pool"]]
     if block.get("trial_family"):
         out["family"] = str(block["trial_family"])
+    # fitness_mode 是搜索级口径（不属于任何单一算法）：rank_ic 用 |RankIC|
+    # （历史兼容），raw_gross 用分位多空真实算术收益（厚尾下避免 rank 假阳性）。
+    if block.get("fitness_mode"):
+        out["fitness_mode"] = str(block["fitness_mode"])
     return out
 
 

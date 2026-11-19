@@ -362,6 +362,12 @@
           "type": "int",
           "required": false,
           "min": 1
+        },
+        "fitness_mode": {
+          "type": "enum",
+          "required": false,
+          "values": ["rank_ic", "raw_gross"],
+          "doc": "搜索目标：rank_ic=|RankIC|（缺省，历史兼容，厚尾下有假阳性）；raw_gross=分位多空真实算术收益均值（与 observe/verdict 的 raw 口径同轴，避免 IC 正但真实亏的陷阱）"
         }
       }
     },

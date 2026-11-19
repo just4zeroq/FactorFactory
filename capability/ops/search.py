@@ -264,13 +264,64 @@ def _label(call) -> Mapping[str, Any]:
     return data
 
 
-def _make_fitness(call, panel: Panel, score: np.ndarray):
-    """构造 fitness 闭包：调同一个 evaluate + 去重登记 + 返回 |RankIC|。
+_FITNESS_MODES = frozenset({"rank_ic", "raw_gross"})
+
+
+def _gross_from_raw(values: np.ndarray, valid: np.ndarray,
+                    raw: np.ndarray, quantile: float = 1.0 / 3.0) -> float:
+    """按因子暴露分位等权构造多空，返回每期真实算术收益的均值。
+
+    与 `observe._longshort` 的 raw 口径同轴：柱 t 的做多组 = 暴露最高 q 比例、
+    做空组 = 最低 q 比例、组内等权，`ls_t = Σ w·raw_t`。这里只产**毛收益
+    均值**（不含成本/判据——搜索空间污染防线，02 §2.1），供 GP 排序候选。
+
+    为什么需要它：`rank_ic` 用变换后 score 的秩相关，厚尾资产上会出现
+    「rank IC 正但真实算术收益亏」的假阳性（low_vol20: IC +0.039 而 raw gross
+    -0.000186，OOS -33%）。`raw_gross` 直接以真实收益为目标，避免把这类因子
+    选进搜索短名单。它是**搜索目标**，不是判据——显著性/成本仍归 verdict。
+    """
+    t_len, n_sym = values.shape
+    if raw.shape != values.shape or valid.shape != values.shape:
+        return -1.0
+    k = max(1, int(round(n_sym * quantile)))
+    ls = np.zeros(t_len, dtype="float64")
+    has = np.zeros(t_len, dtype=bool)
+    for t in range(t_len):
+        row_ok = valid[t] & np.isfinite(values[t]) & np.isfinite(raw[t])
+        idx = np.flatnonzero(row_ok)
+        if idx.size < 2 * k:
+            continue
+        order = idx[np.argsort(values[t, idx], kind="stable")]
+        long_idx = order[-k:]
+        short_idx = order[:k]
+        ls[t] = float(np.mean(raw[t, long_idx]) - np.mean(raw[t, short_idx]))
+        has[t] = True
+    if not has.any():
+        return -1.0
+    return float(np.mean(ls[has]))
+
+
+def _make_fitness(call, panel: Panel, score: np.ndarray,
+                  *, mode: str = "rank_ic", raw: np.ndarray | None = None):
+    """构造 fitness 闭包：调同一个 evaluate + 去重登记 + 返回目标值。
 
     eval 用 `runtime.run` 走与 Evidence 完全相同的六步校验（白名单、指纹、
     outputs），因此算法无法替换求值口径。子调用里没有测试段/保留区引用（02 §2.1）。
+
+    `mode=rank_ic`（缺省，历史兼容）返回 |RankIC|；`mode=raw_gross` 返回
+    `|_gross_from_raw|`——分位多空真实算术收益。两者都只提供排序信号，
+    不含 p 值/成本/判据。
     """
     from capability.runtime import Call, InputRef, run
+
+    if mode not in _FITNESS_MODES:
+        raise FlowError(E1004, f"未知 fitness_mode={mode!r}",
+                        path="search.params.fitness_mode",
+                        hint=f"可用 {sorted(_FITNESS_MODES)}")
+    if mode == "raw_gross" and (raw is None or raw.shape != score.shape):
+        raise FlowError(E3003, "fitness_mode=raw_gross 需要 label.raw 且与 score 同形",
+                        path="search.inputs.label.raw",
+                        hint="label 工位必须产出 raw（变换前标签收益）")
 
     registry = default_registry()
     # 实现版本必须与 impls.py 注册 evaluate 时用的完全一致。注册用的是
@@ -309,6 +360,8 @@ def _make_fitness(call, panel: Panel, score: np.ndarray):
             calls["failed"] += 1
             return -1.0
         calls["ok"] += 1
+        if mode == "raw_gross":
+            return abs(_gross_from_raw(values, valid, raw))
         mask = valid & np.isfinite(score)
         if not mask.any():
             return -1.0
@@ -316,7 +369,7 @@ def _make_fitness(call, panel: Panel, score: np.ndarray):
         finite = ic[np.isfinite(ic)]
         if finite.size < 2:
             return -1.0
-        # 目标只有 |RankIC|：不含 p 值、成本、判据（搜索空间污染防线）。
+        # |RankIC|：不含 p 值、成本、判据（搜索空间污染防线）。
         return float(abs(np.mean(finite)))
 
     return fitness, seen, calls
@@ -413,7 +466,9 @@ def build(call) -> dict:
     # fitness/seen/calls 在所有算法之间**共享**：多算法一次计数（02 §2.2）。
     # 每个算法各自建一个闭包会让同一表达式被算两次、n_trials 虚高，
     # 而 DSR 的门槛正是 n_trials 的函数——那等于用记账错误去放宽判据。
-    fitness, seen, calls = _make_fitness(call, panel, score)
+    fitness_mode = str(params.get("fitness_mode", "rank_ic"))
+    fitness, seen, calls = _make_fitness(
+        call, panel, score, mode=fitness_mode, raw=label.get("raw"))
 
     prior_cands, prior_skipped, as_of = _prior_candidates(call)
 
